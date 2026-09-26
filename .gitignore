@@ -1,0 +1,36 @@
+# --- secrets (never commit) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# --- woyo runtime artifacts ---
+.woyo/
+*.jsonl.transcript
+
+# --- editors / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- research / scratch ---
+research/
+*.log
+dev/node_modules/

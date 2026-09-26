@@ -1,0 +1,36 @@
+# Security Model
+
+woyo is an agent that browses the web, reads untrusted content, and (eventually) executes code and touches external services. This document is the honest threat model. It will be updated every phase.
+
+## Principles
+
+1. **Fail safe.** When a safety decision can't be made (no human reachable, unknown tool, ambiguous permission), the agent under-acts.
+2. **Channel separation.** User instructions, system instructions, and external data are distinct channels. External data is never interpreted as instructions.
+3. **Least privilege by default.** Tools declare permissions; the runtime enforces them. Consequential actions require a human.
+4. **Visibility.** Everything an agent does is observable (events, transcripts). Secrets are not.
+
+## Threats & mitigations (v0.1)
+
+| # | Threat | Mitigation in v0.1 | Residual risk |
+|---|---|---|---|
+| T1 | **Prompt injection** via web pages, search snippets, documents (OWASP LLM01:2025) | All external content wrapped in `<untrusted source=...>` blocks; system-prompt contract forbids following instructions found there; best-effort detector flags instruction-shaped payloads (`injection_flagged` event); native tool-calling channel (not free-text); typed arg validation | **Not fully solvable** — an LLM can be manipulated. Layers reduce likelihood; approval gates + read-only defaults bound the blast radius. Treat any tool that acts on external content as untrusted by default |
+| T2 | **SSRF** — agent fetches internal addresses | `fetch_url` resolves DNS and rejects private/loopback/link-local IPs, only http/https on 80/443, ≤5 re-validated redirects, 2 MB cap, content-type allowlist | DNS-rebinding not yet defeated (no egress proxy in v0.1); Phase 6 adds an egress allowlist/proxy |
+| T3 | **Excessive autonomy / runaway cost** | Hard budgets: steps, tool calls, time, tokens, estimated USD; loop detection (identical repeated calls); approval gates; default-deny when no human | Estimation-based cost limits are approximate for unlisted models |
+| T4 | **Dangerous actions** (writes, deletions, purchases) | `Permission` levels; `writes_external`/`destructive` require explicit approval; **denied by default** when no approval channel | Depends on honest tool classification — integration authors must classify correctly (documented in Tool protocol) |
+| T5 | **Code execution escape** | `python_exec` **disabled by default**; isolated interpreter (`-I`), temp cwd, rlimits (CPU/mem/filesize), timeout, output caps | **Dev-grade only — NOT a security boundary** (no network namespace, no seccomp). Proper container isolation is Phase 4; until then keep it off for untrusted tasks |
+| T6 | **Secret leakage** | Secrets only via environment; never logged, never in events (args digest-logged, outputs capped); `.env` gitignored; transcripts exclude env | Provider request bodies inherently contain prompts — don't paste secrets into tasks |
+| T7 | **Supply chain** (malicious deps) | Minimal dependency set (8 runtime deps, all mainstream); no agent framework; lockfile + review on upgrade | Standard Python ecosystem risk; pin and review |
+| T8 | **Transcript/memory privacy** | Local-first storage (`~/.woyo`), user-readable formats, no telemetry | Local files are as safe as your user account |
+
+## Approval policy
+
+```
+read_only       → runs automatically
+sandboxed       → runs when explicitly enabled in config
+writes_external → requires user approval per action (when WOYO_REQUIRE_APPROVAL=true, the default)
+destructive     → requires user approval per action (always)
+```
+
+## Reporting
+
+Security issues: please open a private GitHub security advisory on the repo rather than a public issue.

@@ -1,0 +1,63 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "woyo"
+version = "0.1.0"
+description = "General-purpose AI agent: understands goals, plans, uses tools, verifies results, and reports back - with human control built in."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{ name = "bessghiermohamed" }]
+keywords = ["ai", "agent", "llm", "tools", "assistant", "automation", "agentic"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "pydantic>=2.7",
+  "pydantic-settings>=2.3",
+  "httpx>=0.27",
+  "openai>=1.40",
+  "rich>=13.7",
+  "typer>=0.12",
+  "simpleeval>=0.9.13",
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.40"]
+search = ["ddgs>=9.0"]
+extract = ["trafilatura>=1.12"]
+dev = [
+  "pytest>=8.2",
+  "pytest-asyncio>=0.23",
+  "ruff>=0.5",
+  "anthropic>=0.40",
+  "ddgs>=9.0",
+]
+
+[project.scripts]
+woyo = "woyo.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/bessghiermohamed/woyo"
+Issues = "https://github.com/bessghiermohamed/woyo/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/woyo"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
