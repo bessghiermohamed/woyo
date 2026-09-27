@@ -32,6 +32,8 @@ Most "AI agents" are chatbots with an agent-themed UI. woyo is a from-scratch ag
 
 **Phase 2 (research depth) — done (v0.2).** SQLite response cache (24h pages / 1h searches) so repeated fetches never re-hit the network, `crawl_site` bounded same-origin crawler, **citation verification** (claimed sources are matched against URLs actually observed in the run — invented citations are dropped and flagged), cross-check guidance in executor prompts, per-task search budgets. Plus a project site on GitHub Pages.
 
+**Chat frontends — done (v0.3).** Talk to woyo from your phone: a **Telegram bot** and a **mobile-first web chat**, both served by the same agent core (transcript memory, per-message budgets, citation-checked answers). Runs anywhere Python runs — including a free Hugging Face Space.
+
 Roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) — next up: persistent tasks & memory (Phase 3), real code sandbox (Phase 4), browser automation (Phase 5), web UI (Phase 6).
 
 ## Quickstart
@@ -56,6 +58,22 @@ You'll see the live plan, each tool call as it happens, token/cost usage — the
 ```bash
 woyo chat
 ```
+
+## Chat with woyo (v0.3)
+
+Two frontends turn woyo into a phone-reachable assistant — no computer needed on your side:
+
+```bash
+# Telegram: talk to @BotFather → /newbot → copy the token into .env
+TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+woyo telegram            # the first /start claims the bot; commands: /new /status /help
+
+# Web: a self-contained chat page (works great on phones)
+WOYO_CHAT_PASSWORD=let-me-in
+woyo web --host 0.0.0.0 --port 7860   # passcode-gated, rate-limited
+```
+
+Both share the same core: rolling transcript memory (survives restarts via `~/.woyo/chats/`), tighter per-message budgets, tools on demand (search / fetch / calculate), and answers with verified sources. A ready-to-copy deployment for a **free Hugging Face Space** lives in [`deploy/hf-space/`](deploy/hf-space/) — web chat plus the Telegram poller in one container.
 
 ### Free-tier friendly
 

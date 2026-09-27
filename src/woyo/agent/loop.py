@@ -120,9 +120,10 @@ class Agent:
             )
 
             if not resp.tool_calls:
-                # text-only reply: nudge once, accept the second as final
+                # text-only reply: task mode nudges once and accepts the second
+                # as final; chat mode (direct_text_replies) accepts prose directly
                 text_only_strikes += 1
-                if text_only_strikes >= 2:
+                if text_only_strikes >= 2 or self.settings.direct_text_replies:
                     final = {
                         "summary": resp.content or "(no content)",
                         "verified": False,
@@ -130,7 +131,10 @@ class Agent:
                         "sources": [],
                     }
                     outcome = "completed"
-                    outcome_detail = "text-only final answer"
+                    outcome_detail = (
+                        "direct reply" if self.settings.direct_text_replies else
+                        "text-only final answer"
+                    )
                     break
                 messages.append(
                     Message(

@@ -71,3 +71,16 @@ The vision demands a rich UI eventually — but UIs hide agent behavior behind p
 - *License*: g4f's license terms are nonstandard for embedding; keeping it a runtime-optional extra (never vendored, never a hard dependency) avoids contaminating woyo's MIT surface.
 
 **The alternative is strictly better.** Sanctioned free tiers — Gemini Flash, Groq, OpenRouter `:free` models (17 available), Mistral, Cohere trial keys, HuggingFace included credits, local Ollama — are free, legitimate, and stable. g4f stays available for experimentation and for users who accept the trade-offs knowingly.
+
+## ADR-10: Chat frontends now — Telegram pulled forward from Phase 7
+
+The roadmap had Telegram at Phase 7 (approvals channel). Reality intervened: the primary user has no computer — a phone-reachable chat *is* the product. So v0.3 ships two frontends, Telegram and a mobile-first web chat, backed by one shared core.
+
+Decisions worth recording:
+
+- **A chat is a sequence of agent runs, not a long-lived loop.** Each message is framed as a task with the rolling transcript embedded; the agent (router, budgets, event bus) is rebuilt per message. Budgets stay per-message, routers never exhaust mid-chat, and every reply still gets the full plan→act→verify treatment — including citation checking.
+- **`direct_text_replies` for chat, nudge for tasks.** Task mode demands the `finish` tool (Phase 2 hardening — models would ramble instead of finishing). In chat that pressure backfired live (Cohere answered "I'm unable to complete the task as it requires a response in prose"). Chat profile accepts a prose reply as final; research answers still route through `finish` to get verified sources.
+- **Zero new dependencies.** The Telegram bot is plain long-polling over the httpx client woyo already ships; the web chat is a stdlib `ThreadingHTTPServer` with one embedded HTML page bridging to a single background asyncio loop. No bot framework, no web framework — same thin-core philosophy as ADR-1.
+- **Public exposure requires a passcode.** `woyo web` refuses to bind non-loopback without `WOYO_CHAT_PASSWORD`; the API key stays server-side. Per-session rate limits + daily caps protect the budget behind a public URL.
+- **Fail-safe approvals still hold.** Unattended chat has no approval channel, so external-write tools are denied (ADR-7 unchanged). The Phase 7 work — approval buttons in Telegram — will make them usable, not bypass them.
+- **Hosting: free HF Space first.** `deploy/hf-space/` runs the package straight from the GitHub tag; secrets (provider key, passcode, bot token) are Space secrets, never in any repo. Free CPU Spaces sleep after ~48h idle — a cron ping to `/api/health` keeps one alive.

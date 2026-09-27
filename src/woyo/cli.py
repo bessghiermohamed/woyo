@@ -20,6 +20,7 @@ from rich.text import Text
 
 from woyo import __version__
 from woyo.config import PROVIDER_PRESETS, Settings
+from woyo.errors import AgentError
 from woyo.events import Event, EventBus
 from woyo.memory.session import SessionStore
 from woyo.models.router import ModelRouter
@@ -193,6 +194,46 @@ def chat():
         )
 
 
+@app.command()
+def telegram():
+    """Run the Telegram chat bot (long-polling; Ctrl-C to stop)."""
+    from woyo.chat.telegram import TelegramBot, telegram_credentials
+
+    settings = Settings()
+    token, allowed = telegram_credentials()
+    if not token:
+        console.print(
+            Panel(
+                "TELEGRAM_BOT_TOKEN not found.\n\n"
+                "1. Talk to @BotFather on Telegram → /newbot → copy the token\n"
+                "2. Put it in your .env:  TELEGRAM_BOT_TOKEN=123456:ABC-DEF...\n"
+                "3. Optional: TELEGRAM_ALLOWED_CHAT_IDS=123456789",
+                title="woyo telegram", border_style="yellow",
+            )
+        )
+        raise typer.Exit(1)
+    bot = TelegramBot(settings, token, allowed)
+    try:
+        asyncio.run(bot.run_forever())
+    except KeyboardInterrupt:
+        console.print("[dim]bot stopped[/dim]")
+
+
+@app.command()
+def web(
+    host: str = typer.Option("127.0.0.1", help="Bind address (0.0.0.0 needs a passcode)"),
+    port: int = typer.Option(7860, help="Port (7860 is the HF Spaces default)"),
+):
+    """Serve the web chat UI (phone-friendly, passcode-gated when public)."""
+    from woyo.chat.web import serve
+
+    try:
+        serve(Settings(), host=host, port=port)
+    except AgentError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+
 def _print_tools(registry: ToolRegistry) -> None:
     table = Table(title="Tools")
     table.add_column("name")
@@ -276,6 +317,20 @@ def doctor():
         checks.append(("calculate", True, "simpleeval"))
     except ImportError:
         checks.append(("calculate", False, "missing — pip install -e ."))
+
+    from woyo.chat.telegram import telegram_credentials
+
+    tg_token, tg_allowed = telegram_credentials()
+    if tg_token:
+        scope = f"allowed ids: {sorted(tg_allowed)}" if tg_allowed else "first /start claims the bot"
+        checks.append(("telegram", True, f"token found ({scope})"))
+    else:
+        checks.append(("telegram", False, "no token — set TELEGRAM_BOT_TOKEN (optional)"))
+
+    if settings.chat_password:
+        checks.append(("web chat", True, "passcode set — safe to expose publicly"))
+    else:
+        checks.append(("web chat", True, "no passcode — localhost only (WOYO_CHAT_PASSWORD)"))
 
     if settings.cache_enabled:
         from woyo.tools.http_cache import build_cache_from_settings

@@ -24,6 +24,18 @@ Robust `web_search`/`fetch_url` in the field: content extraction quality (trafil
 - [x] Per-task search budget (`WOYO_MAX_SEARCH_CALLS`, default 12)
 - [ ] Extraction quality spot-check on 20 diverse pages (10 checked live: 8/8 reachable pages extracted well — 360 to 16,588 words; 1 rate-limited by target, 1 bad URL — rolling)
 
+## Chat frontends ✅ (v0.3, pulled forward from Phase 7)
+
+The user has no computer — a phone-reachable chat became the priority
+(ADR-10). Delivered ahead of schedule:
+
+- [x] Telegram bot: long-polling, zero new deps, owner-claim access control, /new /status /help
+- [x] Mobile-first web chat: stdlib server + one embedded page, passcode-gated, rate-limited
+- [x] Shared ChatSession core: transcript memory persisted across restarts, per-message budgets
+- [x] Citation-checked answers in chat (live Cohere run: research turn with verified sources)
+- [x] Free hosting recipe: `deploy/hf-space/` (Docker Space, secrets via settings)
+- [ ] Telegram inline approval buttons (stays in Phase 7 — makes write-tools usable in chat)
+
 ## Phase 3 — Persistence, tasks & memory
 
 SQLite store; task state machine (pending/running/waiting_approval/paused/completed/failed/cancelled) with pause/resume/cancel/retry; conversation memory across turns; long-term memory with embeddings (SQLite + sqlite-vec); memory visibility & deletion (CLI `woyo memory` commands); data minimization (expiration, relevance).

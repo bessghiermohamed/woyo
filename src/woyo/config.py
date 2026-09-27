@@ -109,6 +109,12 @@ class Settings(BaseSettings):
     context_soft_limit_tokens: int = 24_000
     tool_output_cap_chars: int = 12_000
 
+    # --- chat frontends (v0.3) ---
+    chat_password: str | None = None  # required to expose web chat beyond localhost
+    chat_history_turns: int = 12  # transcript turns sent as context per message
+    chat_daily_messages: int = 200  # per chat, per day
+    direct_text_replies: bool = False  # chat: accept prose as the final answer
+
     # --- misc ---
     timezone: str = "UTC"
     sessions_dir: str = "~/.woyo/sessions"

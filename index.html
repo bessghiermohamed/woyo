@@ -144,6 +144,7 @@
   <div class="nav-inner">
     <a class="logo" href="#top"><span class="logo-mark">w</span>woyo</a>
     <div class="nav-links">
+      <a href="#chat">Chat</a>
       <a href="#principles">Principles</a>
       <a href="#loop">The loop</a>
       <a href="#providers">Providers</a>
@@ -161,9 +162,9 @@
 <header class="hero" id="top">
   <div class="hero-inner">
     <div class="badges">
-      <span class="badge">v<b>0.2.0</b></span>
+      <span class="badge">v<b>0.3.0</b></span>
       <span class="badge">MIT license</span>
-      <span class="badge">75+ tests</span>
+      <span class="badge">86 tests</span>
       <span class="badge">13 model providers</span>
       <span class="badge">runs at $0</span>
     </div>
@@ -175,7 +176,8 @@
       actions have consequences.
     </p>
     <div class="cta">
-      <a class="btn btn-primary" href="#quickstart">Get started</a>
+      <a class="btn btn-primary" href="#chat">Chat with it</a>
+      <a class="btn" href="#quickstart">Get started</a>
       <a class="btn" href="https://github.com/bessghiermohamed/woyo" target="_blank" rel="noopener">View source</a>
       <a class="btn" href="https://github.com/bessghiermohamed/woyo/blob/main/ARCHITECTURE.md" target="_blank" rel="noopener">Read the architecture</a>
     </div>
@@ -207,6 +209,46 @@
     </div>
   </div>
 </header>
+
+<section id="chat">
+  <div class="sec-inner">
+    <div class="kicker">new in v0.3</div>
+    <h2>Talk to your agent — from a phone</h2>
+    <p class="sub">The same plan&nbsp;→&nbsp;act&nbsp;→&nbsp;verify core, now behind two frontends that need
+    no computer on your side: a Telegram bot and a passcode-protected web chat. Conversations
+    persist across restarts; every message gets its own budget; research answers still arrive
+    with citation-checked sources.</p>
+    <div class="qs">
+      <div class="code"><button class="copy" onclick="cp(this)">copy</button><span class="c"># telegram: @BotFather → /newbot → paste token in .env</span>
+TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
+<span class="p">woyo</span> telegram   <span class="c"># first /start claims the bot</span>
+
+<span class="c"># web chat: one self-contained page, mobile-first</span>
+WOYO_CHAT_PASSWORD=let-me-in
+<span class="p">woyo</span> web --host 0.0.0.0 --port 7860</div>
+      <div style="display:flex;flex-direction:column;gap:14px;justify-content:center">
+        <div style="border:1px solid var(--border2);border-radius:14px;padding:18px 20px;background:var(--surface)">
+          <b style="color:var(--accent)">📱 Telegram bot</b>
+          <p style="margin:8px 0 0;color:var(--muted);font-size:14.5px">Long-polling over plain HTTP — zero extra
+          dependencies. /new resets the conversation, /status shows usage. One chat at a time,
+          typing indicator while it works.</p>
+        </div>
+        <div style="border:1px solid var(--border2);border-radius:14px;padding:18px 20px;background:var(--surface)">
+          <b style="color:var(--accent)">🌐 Web chat</b>
+          <p style="margin:8px 0 0;color:var(--muted);font-size:14.5px">Stdlib server + one embedded page.
+          Passcode-gated and rate-limited, so it is safe to expose publicly — the model key
+          never reaches the browser.</p>
+        </div>
+        <div style="border:1px solid var(--border2);border-radius:14px;padding:18px 20px;background:var(--surface)">
+          <b style="color:var(--accent)">🚀 Free hosting included</b>
+          <p style="margin:8px 0 0;color:var(--muted);font-size:14.5px">A ready-to-copy Hugging Face Space
+          (<span style="font-family:var(--mono)">deploy/hf-space/</span>) runs both frontends on the
+          free CPU tier — secrets stay in Space settings, never in a repo.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
 
 <section id="principles">
   <div class="sec-inner">
@@ -316,7 +358,8 @@
     Full details in <a href="https://github.com/bessghiermohamed/woyo/blob/main/docs/ROADMAP.md" target="_blank" rel="noopener">docs/ROADMAP.md</a>.</p>
     <div class="phases">
       <div class="phase"><span class="no">Phase 1</span><div><b>Agent core (MVP)</b><p>Loop, planner, tool system, model routing, budgets, injection defenses, CLI, test suite.</p></div><span class="status done">done · v0.1</span></div>
-      <div class="phase"><span class="no">Phase 2</span><div><b>Research depth</b><p>Response caching, bounded crawling, citation verification against observed URLs, cross-check prompts, search budgets.</p></div><span class="status now">in progress · v0.2</span></div>
+      <div class="phase"><span class="no">Phase 2</span><div><b>Research depth</b><p>Response caching, bounded crawling, citation verification against observed URLs, cross-check prompts, search budgets.</p></div><span class="status done">done · v0.2</span></div>
+      <div class="phase"><span class="no">v0.3</span><div><b>Chat frontends</b><p>Telegram bot + mobile web chat, transcript memory that survives restarts, per-message budgets, free HF Space hosting recipe.</p></div><span class="status done">done · v0.3</span></div>
       <div class="phase"><span class="no">Phase 3</span><div><b>Persistence, tasks &amp; memory</b><p>SQLite store, task state machine, long-term memory with embeddings, memory you can inspect and delete.</p></div><span class="status next">next</span></div>
       <div class="phase"><span class="no">Phase 4</span><div><b>Real code sandbox</b><p>Container isolation for python_exec, scoped file tools, documented threat model.</p></div><span class="status next">planned</span></div>
       <div class="phase"><span class="no">Phase 5</span><div><b>Browser automation</b><p>Playwright-driven browser tool with action budgets, domain allowlists, approval on the "final click".</p></div><span class="status next">planned</span></div>
@@ -359,7 +402,7 @@ woyo chat</div>
     <a href="https://github.com/bessghiermohamed/woyo/blob/main/docs/SECURITY.md">Security</a>
     <a href="https://github.com/bessghiermohamed/woyo/blob/main/docs/ROADMAP.md">Roadmap</a>
   </div>
-  <div class="made">woyo v0.2.0 · MIT · an open-source agent runtime — built in the open</div>
+  <div class="made">woyo v0.3.0 · MIT · an open-source agent runtime — built in the open</div>
 </footer>
 
 <script>

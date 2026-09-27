@@ -51,3 +51,23 @@ Security issues: please open a private GitHub security advisory on the repo rath
 - some upstream endpoints do not sanction automated use (ToS/account risk).
 
 Never enable g4f for tasks touching secrets, personal data, or anything confidential. This is why it is an opt-in extra, documented in ADR-9, and never a default.
+
+## Chat frontends (v0.3)
+
+**Telegram bot.** The token is a full credential: anyone holding it can read
+your bot's messages and impersonate it. Keep it in `.env` (never committed);
+if it leaks, revoke it via @BotFather (`/revoke`). Access control:
+`TELEGRAM_ALLOWED_CHAT_IDS` wins when set; otherwise the first `/start`
+claims the bot (persisted in `~/.woyo/telegram_state.json`) and everyone
+else is refused. Only one poller may run per token — a 409 from the API
+means a second instance is live somewhere.
+
+**Web chat.** The page holds no secrets; the provider key never leaves the
+server. Binding beyond localhost *requires* `WOYO_CHAT_PASSWORD`
+(constant-time compare), and the server enforces per-session rate limits
+(20 messages/hour) plus a global daily cap — a public URL must not become
+a free API-key proxy. Chat inputs are framed as agent tasks and tool
+outputs stay wrapped as untrusted data, so a malicious web page the agent
+fetches cannot hijack the conversation (same T4 defenses as `woyo run`).
+Unattended chat has no approval channel: external-write tools are denied
+fail-safe, exactly like headless `woyo run`.
