@@ -77,6 +77,10 @@ class ModelRouter:
                 base_url=self.settings.base_url if name == self.settings.provider else None,
                 api_key=resolve_api_key("anthropic", self.settings),
             )
+        if name == "g4f":
+            from woyo.models.g4f_provider import G4fProvider
+
+            return G4fProvider()
         from woyo.config import resolve_api_key, resolve_base_url
         from woyo.models.openai_compat import OpenAICompatProvider
 

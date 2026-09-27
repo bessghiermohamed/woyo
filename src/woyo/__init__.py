@@ -4,7 +4,7 @@ Understands goals, plans, uses tools, verifies results, and reports back —
 with human control built in.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 from woyo.agent.loop import Agent
 from woyo.agent.results import RunResult

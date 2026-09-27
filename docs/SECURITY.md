@@ -34,3 +34,20 @@ destructive     → requires user approval per action (always)
 ## Reporting
 
 Security issues: please open a private GitHub security advisory on the repo rather than a public issue.
+
+## Credential hygiene (added v0.1.1)
+
+- **Never paste keys in chats, issues, or PRs.** Keys shared in plaintext (including with AI assistants) should be treated as compromised and rotated. If a key was exposed, revoke it and issue a new one before putting it in your local `.env`.
+- woyo reads provider keys from the environment or your local `.env` — which is gitignored by default and must never be committed. The repo's secret-scan runs before every push.
+- Prefer fine-grained, minimally-scoped tokens (e.g. GitHub fine-grained PATs scoped to one repo) over broad classic tokens.
+- Keys for later phases (Telegram bot token, Supabase service key, Cloudflare/Vercel tokens) are reserved in `.env.example` as comments. The Supabase **service_role** key in particular bypasses Row Level Security — treat it like a root password and never expose it client-side.
+
+## GPT4Free (g4f) — experimental extra
+
+`g4f` routes requests through free LLM endpoints collected from the web. Using it means:
+
+- your prompts (and anything the agent puts in them) travel to **unvetted third parties**,
+- availability and quality change without notice (our Sept 2026 test: default chain failed without a local browser),
+- some upstream endpoints do not sanction automated use (ToS/account risk).
+
+Never enable g4f for tasks touching secrets, personal data, or anything confidential. This is why it is an opt-in extra, documented in ADR-9, and never a default.

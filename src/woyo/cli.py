@@ -12,6 +12,7 @@ import json
 import typer
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.markup import escape
 from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
@@ -220,6 +221,8 @@ def doctor():
     provider = settings.provider
     if provider == "mock":
         checks.append(("provider", True, "mock (no network)"))
+    elif provider == "g4f":
+        checks.append(("provider", True, "g4f — no key needed (experimental)"))
     elif key:
         checks.append(("provider", True, f"{provider} — key found"))
     else:
@@ -227,11 +230,11 @@ def doctor():
         env_name = preset.get("key_env") or "WOYO_API_KEY"
         checks.append(("provider", False, f"{provider} — set {env_name} (see .env.example)"))
 
-    import os
+    from woyo.config import env_value
 
-    if os.environ.get("TAVILY_API_KEY"):
+    if env_value("TAVILY_API_KEY"):
         checks.append(("search", True, "tavily (free credits monthly)"))
-    elif os.environ.get("BRAVE_API_KEY"):
+    elif env_value("BRAVE_API_KEY"):
         checks.append(("search", True, "brave"))
     else:
         try:
@@ -259,6 +262,15 @@ def doctor():
         checks.append(("anthropic", False, "optional: pip install 'woyo[anthropic]'"))
 
     try:
+        import g4f  # noqa: F401
+
+        checks.append(
+            ("g4f", True, "available (experimental — see docs/SECURITY.md)")
+        )
+    except ImportError:
+        checks.append(("g4f", False, "optional: pip install 'woyo[g4f]' (experimental)"))
+
+    try:
         import simpleeval  # noqa: F401
 
         checks.append(("calculate", True, "simpleeval"))
@@ -280,7 +292,7 @@ def doctor():
     table.add_column("status")
     table.add_column("detail")
     for name, ok, detail in checks:
-        table.add_row(name, "[green]ok[/green]" if ok else "[yellow]!![/yellow]", detail)
+        table.add_row(name, "[green]ok[/green]" if ok else "[yellow]!![/yellow]", escape(detail))
     console.print(table)
 
 

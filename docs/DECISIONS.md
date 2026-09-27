@@ -57,3 +57,17 @@ Tools declare `Permission`; the runtime decides who must approve. With no intera
 ## ADR-8: CLI before web UI
 
 The vision demands a rich UI eventually — but UIs hide agent behavior behind polish. Building the CLI live-view first (plan, tool calls, budget ticker) forces the event stream to be complete and useful, which is exactly the contract the Phase 6 web UI will consume. The UI will be *another subscriber*, not a rewrite.
+
+## ADR-9: GPT4Free is an opt-in experimental extra, never a default provider
+
+**Context.** The user asked to try GPT4Free (`g4f`) as a free model source alongside sanctioned free tiers.
+
+**Decision.** woyo wires g4f as an optional dependency (`pip install "woyo[g4f]"`, `WOYO_PROVIDER=g4f`) behind a thin adapter (`src/woyo/models/g4f_provider.py`) that reuses the OpenAI-compat conversion. It is excluded from default dependencies and defaults.
+
+**Why not adopt it.**
+- *Verified failure mode (Sept 2026 live test from a clean Linux box)*: the default provider chain failed — some routes require a local Chrome/Chromium, others are IP-blocked (403) or paywalled. Reliability is inherent to how g4f sources endpoints.
+- *ToS exposure*: several upstream endpoints do not sanction automated access; using them at scale risks account bans and legal ambiguity.
+- *Data safety*: prompts travel to unvetted third parties with no SLA — categorically unsafe for anything confidential.
+- *License*: g4f's license terms are nonstandard for embedding; keeping it a runtime-optional extra (never vendored, never a hard dependency) avoids contaminating woyo's MIT surface.
+
+**The alternative is strictly better.** Sanctioned free tiers — Gemini Flash, Groq, OpenRouter `:free` models (17 available), Mistral, Cohere trial keys, HuggingFace included credits, local Ollama — are free, legitimate, and stable. g4f stays available for experimentation and for users who accept the trade-offs knowingly.

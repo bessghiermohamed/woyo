@@ -19,7 +19,7 @@ Most "AI agents" are chatbots with an agent-themed UI. woyo is a from-scratch ag
 |---|---|
 | **Real loop, not a script** | Plan → act → observe → adapt → verify, with a genuine state machine and budget enforcement (`src/woyo/agent/loop.py`) |
 | **Tools are plugins** | Standardized `Tool` protocol with typed args, permissions, timeouts — register a new tool and the agent discovers it (`src/woyo/tools/`) |
-| **No vendor lock-in** | Model providers are swappable per role (planner / executor / summarizer) — OpenAI, Anthropic, Groq, OpenRouter, DeepSeek, Ollama, any OpenAI-compatible endpoint (`src/woyo/models/`) |
+| **No vendor lock-in** | Model providers are swappable per role (planner / executor / summarizer) — OpenAI, Anthropic, Groq, Gemini, OpenRouter, Mistral, xAI (Grok), Cohere, HuggingFace, DeepSeek, Ollama, any OpenAI-compatible endpoint (`src/woyo/models/`) |
 | **Security is structural** | External content is wrapped as `<untrusted>` data, never instructions; approval gates for consequential actions; SSRF-safe fetching; budget caps (docs/SECURITY.md) |
 | **Observable by design** | Every run emits structured events (tool calls, durations, token usage, cost estimates) — the foundation for the upcoming UI |
 | **Stops when it should** | Step / time / token / cost / tool-call limits, loop detection, and an honest `verified: false` when it couldn't check its own work |
@@ -57,9 +57,32 @@ woyo chat
 
 woyo is designed to run at $0 for typical use:
 
-- **Models**: Google AI Studio (Gemini Flash, generous free tier), Groq, OpenRouter free models, or fully local via Ollama — any OpenAI-compatible endpoint works.
+- **Models**: Google AI Studio (Gemini Flash, generous free tier), Groq, OpenRouter free models (`:free` suffix), Mistral, Cohere trial keys, HuggingFace inference credits — or fully local via Ollama. Any OpenAI-compatible endpoint works.
 - **Search**: Tavily free tier (1,000 credits/mo) or Brave; DuckDuckGo needs no key at all (`pip install -e ".[search]"`).
 - **Storage**: plain files + SQLite. No paid vector DB required.
+
+<details>
+<summary><strong>Provider matrix (verified Sept 2026)</strong></summary>
+
+| Provider | Env var(s) | Example model | Cost |
+|---|---|---|---|
+| openai | `OPENAI_API_KEY` | `gpt-4o-mini` | paid |
+| groq | `GROQ_API_KEY` | `llama-3.3-70b-versatile` | free tier |
+| gemini | `GEMINI_API_KEY` / `GOOGLE_API_KEY` | `gemini-2.5-flash` | free tier |
+| openrouter | `OPENROUTER_API_KEY` | `qwen/qwen3.8-27b:free` | 17 free models |
+| mistral | `MISTRAL_API_KEY` | `mistral-small-latest` | free tier |
+| xai | `XAI_API_KEY` | `grok-4-fast-non-reasoning` | paid credits |
+| cohere | `COHERE_API_KEY` | `command-a-03-2025` | trial key |
+| huggingface | `HF_TOKEN` | `openai/gpt-oss-120b` | included credits |
+| deepseek | `DEEPSEEK_API_KEY` | `deepseek-chat` | cheap |
+| anthropic | `ANTHROPIC_API_KEY` | `claude-haiku` (native SDK) | paid |
+| ollama | — | `qwen3:8b` | free, local |
+| g4f | — | any | **experimental** — see below |
+| custom | `WOYO_API_KEY` + `WOYO_BASE_URL` | any OpenAI-compatible endpoint | varies |
+
+**GPT4Free (`g4f`)**: wired as an opt-in extra (`pip install "woyo[g4f]"`, `WOYO_PROVIDER=g4f`) for experimentation. Tested Sept 2026 from a clean Linux box: the default provider chain failed (some routes need a local Chrome, others are IP-blocked or paywalled). It is unreliable by nature and sends your prompts to unvetted third parties — never use it for anything sensitive. Your sanctioned free tiers above are strictly better. See ADR-9 in [docs/DECISIONS.md](docs/DECISIONS.md).
+
+</details>
 
 ## Built-in tools (v0.1)
 

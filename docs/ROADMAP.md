@@ -77,3 +77,20 @@ Eval harness (success rate, cost, latency, recovery rate over a task corpus); ad
 | Memory/storage | Files + SQLite + sqlite-vec | — (no paid vector DB needed) |
 | Code sandbox | Docker (local) | E2B hosted convenience |
 | Hosting | localhost / self-host | VPS for the Phase 6 UI |
+
+---
+
+## Provisioned credentials → phase mapping (Sept 2026)
+
+Keys the owner already holds, and where they enter the roadmap:
+
+| Credential | Phase | Purpose |
+|---|---|---|
+| Groq / Gemini / OpenRouter / Mistral / Cohere / xAI / HuggingFace keys | now | model providers (see README provider matrix) |
+| `GITHUB_TOKEN` | Phase 7 | GitHub integration (issues, PRs, repo ops) — first integration target |
+| Telegram bot token | Phase 7 | approvals & notifications channel for headless runs |
+| Supabase (URL + service key) | Phase 3+ (optional) | hosted alternative to SQLite/sqlite-vec for memory & task queue; self-host stays default |
+| Cloudflare API token | Phase 6 (optional) | web UI hosting / R2 artifact storage |
+| Vercel token | Phase 6 (optional) | alternative web UI hosting |
+
+Rotation reminder: these keys were shared in plaintext during setup — rotate them before relying on any of them in production.

@@ -9,6 +9,7 @@ prefixed ("groq:llama-3.3-70b-versatile", that provider).
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -17,10 +18,16 @@ Role = Literal["planner", "executor", "summarizer"]
 
 PROVIDER_PRESETS: dict[str, dict[str, str | None]] = {
     # provider -> {base_url, key_env, key_default}
+    # key_env may list several env vars (comma-separated) — first match wins.
     "openai": {"base_url": None, "key_env": "OPENAI_API_KEY", "key_default": None},
     "groq": {
         "base_url": "https://api.groq.com/openai/v1",
         "key_env": "GROQ_API_KEY",
+        "key_default": None,
+    },
+    "gemini": {
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+        "key_env": "GEMINI_API_KEY,GOOGLE_API_KEY",
         "key_default": None,
     },
     "openrouter": {
@@ -38,6 +45,21 @@ PROVIDER_PRESETS: dict[str, dict[str, str | None]] = {
         "key_env": "MISTRAL_API_KEY",
         "key_default": None,
     },
+    "xai": {
+        "base_url": "https://api.x.ai/v1",
+        "key_env": "XAI_API_KEY",
+        "key_default": None,
+    },
+    "cohere": {
+        "base_url": "https://api.cohere.ai/compatibility/v1",
+        "key_env": "COHERE_API_KEY",
+        "key_default": None,
+    },
+    "huggingface": {
+        "base_url": "https://router.huggingface.co/v1",
+        "key_env": "HF_TOKEN,HUGGINGFACE_API_KEY",
+        "key_default": None,
+    },
     "ollama": {
         "base_url": "http://localhost:11434/v1",
         "key_env": None,
@@ -45,6 +67,7 @@ PROVIDER_PRESETS: dict[str, dict[str, str | None]] = {
     },
     "anthropic": {"base_url": None, "key_env": "ANTHROPIC_API_KEY", "key_default": None},
     "custom": {"base_url": "WOYO_BASE_URL", "key_env": "WOYO_API_KEY", "key_default": None},
+    "g4f": {"base_url": None, "key_env": None, "key_default": "g4f"},
     "mock": {"base_url": None, "key_env": None, "key_default": "mock"},
 }
 
@@ -106,21 +129,59 @@ class Settings(BaseSettings):
         return Path(self.sessions_dir).expanduser()
 
 
+def _dotenv_lookup(names: list[str]) -> str | None:
+    """Find a value for one of `names` in the CWD .env file (no override).
+
+    pydantic-settings only loads WOYO_* fields into Settings; provider-native
+    variables (GROQ_API_KEY, TAVILY_API_KEY, ...) live in the same .env and
+    must be readable too. os.environ always wins over the file.
+    """
+    try:
+        lines = Path(".env").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    wanted = {n.strip() for n in names}
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        if key.strip() in wanted:
+            value = value.strip().strip("'\"")
+            if value:
+                return value
+    return None
+
+
+def env_value(*names: str) -> str | None:
+    """First non-empty value among `names`: os.environ, then CWD .env."""
+    for name in names:
+        value = os.environ.get(name)
+        if value:
+            return value
+    return _dotenv_lookup(list(names))
+
+
 def resolve_api_key(provider: str, settings: Settings) -> str | None:
     if provider == "mock":
         return "mock"
     if provider == "anthropic":
         if settings.api_key:
             return settings.api_key
-        return os.environ.get("ANTHROPIC_API_KEY")
+        return env_value("ANTHROPIC_API_KEY")
     preset = PROVIDER_PRESETS.get(provider)
     if preset is None:  # unknown/custom provider name
-        return settings.api_key or os.environ.get(f"{provider.upper()}_API_KEY")
+        return settings.api_key or env_value(f"{provider.upper()}_API_KEY")
     if settings.api_key and provider == settings.provider:
         return settings.api_key
     key_env = preset.get("key_env")
     if key_env:
-        return os.environ.get(key_env)
+        names = [n.strip() for n in key_env.split(",")]
+        for env_name in names:
+            value = os.environ.get(env_name)
+            if value:
+                return value
+        return _dotenv_lookup(names)
     return preset.get("key_default")
 
 
