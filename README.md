@@ -75,7 +75,7 @@ woyo web --host 0.0.0.0 --port 7860   # passcode-gated, rate-limited
 
 Both share the same core: rolling transcript memory (survives restarts via `~/.woyo/chats/`), tighter per-message budgets, tools on demand (search / fetch / calculate), and answers with verified sources.
 
-**Hosting at $0:** [`deploy/gha-telegram/`](deploy/gha-telegram/) runs the Telegram bot on **GitHub Actions** (public repos get unlimited minutes) — a cron workflow keeps a runner alive ~24/7 and syncs conversation state to a private gist between runs. For a container deployment (needs HF PRO since 2026), [`deploy/hf-space/`](deploy/hf-space/) runs web chat plus the Telegram poller in one Space.
+**Hosting at $0:** [`deploy/gha-telegram/`](deploy/gha-telegram/) runs the Telegram bot on **GitHub Actions** (public repos get unlimited minutes) — a cron workflow keeps a runner alive ~24/7 and syncs conversation state to a private repo between runs. For a container deployment (needs HF PRO since 2026), [`deploy/hf-space/`](deploy/hf-space/) runs web chat plus the Telegram poller in one Space.
 
 ### Free-tier friendly
 

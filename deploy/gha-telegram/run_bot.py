@@ -1,72 +1,82 @@
 """Run the woyo Telegram bot on a GitHub Actions runner (ephemeral host).
 
 The runner vanishes after ~6h, so conversation + offset state is synced to
-a private GitHub gist after every event (BOT_STATE_GIST_ID +
-BOT_STATE_GIST_TOKEN env). On boot the gist is pulled back into ~/.woyo,
-so the next runner resumes exactly where this one stopped.
+a PRIVATE git repo (BOT_STATE_REPO + BOT_STATE_TOKEN env) after every
+message. On boot the repo is cloned into a temp dir and its *.json files
+are restored into ~/.woyo, so the next runner resumes exactly where this
+one stopped.
 
 Secrets this script expects (repo → Settings → Secrets and variables):
   TELEGRAM_BOT_TOKEN   the bot token from @BotFather
   COHERE_API_KEY       (or whichever provider WOYO_PROVIDER points to)
-  BOT_STATE_GIST_ID    id of the private gist used as state store
-  BOT_STATE_GIST_TOKEN a GitHub token with gist scope (sync only)
+  BOT_STATE_REPO       owner/name of the private state repo
+  BOT_STATE_TOKEN      a GitHub token with repo scope (sync only)
 """
 
 from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
+import tempfile
 from pathlib import Path
 
-import httpx
-
-GIST_API = "https://api.github.com/gists"
 HOME = Path.home() / ".woyo"
 STATE_FILE = HOME / "telegram_state.json"
 CHATS_DIR = HOME / "chats"
 
-GIST_ID = os.environ.get("BOT_STATE_GIST_ID", "")
-GIST_TOKEN = os.environ.get("BOT_STATE_GIST_TOKEN", "")
+STATE_REPO = os.environ.get("BOT_STATE_REPO", "")
+STATE_TOKEN = os.environ.get("BOT_STATE_TOKEN", "")
+CLONE_DIR: Path | None = None
 
 
-def _headers() -> dict[str, str]:
-    return {
-        "Authorization": f"Bearer {GIST_TOKEN}",
-        "Accept": "application/vnd.github+json",
-    }
+def _git(*args: str, cwd: Path | None = None) -> None:
+    subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
+    )
 
 
 def pull_state() -> None:
-    """Restore ~/.woyo from the gist before the bot starts."""
-    if not GIST_ID:
-        print("no BOT_STATE_GIST_ID — starting with empty state")
+    """Clone the state repo and restore its files into ~/.woyo."""
+    global CLONE_DIR
+    if not STATE_REPO:
+        print("no BOT_STATE_REPO — starting with empty state")
         return
-    with httpx.Client(timeout=30, headers=_headers()) as client:
-        gist = client.get(f"{GIST_API}/{GIST_ID}").raise_for_status().json()
-    for name, info in gist.get("files", {}).items():
-        content = info.get("content") or ""
-        if not content:
-            continue
-        if name == STATE_FILE.name:
+    CLONE_DIR = Path(tempfile.mkdtemp(prefix="woyo-state-"))
+    url = f"https://x-access-token:{STATE_TOKEN}@github.com/{STATE_REPO}.git"
+    _git("clone", "--depth", "5", url, str(CLONE_DIR))
+    _git("config", "user.name", "woyo-bot", cwd=CLONE_DIR)
+    _git("config", "user.email", "woyo-bot@users.noreply.github.com", cwd=CLONE_DIR)
+    restored = 0
+    for path in CLONE_DIR.rglob("*.json"):
+        if path.name == "telegram_state.json":
             STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-            STATE_FILE.write_text(content, encoding="utf-8")
-        elif name.endswith(".json"):
+            STATE_FILE.write_bytes(path.read_bytes())
+            restored += 1
+        else:
             CHATS_DIR.mkdir(parents=True, exist_ok=True)
-            (CHATS_DIR / name).write_text(content, encoding="utf-8")
-    print(f"state restored from gist: {len(gist.get('files', {}))} file(s)")
+            (CHATS_DIR / path.name).write_bytes(path.read_bytes())
+            restored += 1
+    print(f"state restored: {restored} file(s) from {STATE_REPO}")
 
 
 def _push_file(name: str, path: Path) -> None:
-    if not GIST_ID or not path.exists():
+    if CLONE_DIR is None or not path.exists():
         return
+    target = CLONE_DIR / name
     try:
-        with httpx.Client(timeout=30, headers=_headers()) as client:
-            client.patch(
-                f"{GIST_API}/{GIST_ID}",
-                json={"files": {name: {"content": path.read_text(encoding="utf-8")}}},
-            ).raise_for_status()
-    except Exception as exc:  # noqa: BLE001 — sync must never kill the bot
-        print(f"warn: gist sync of {name} failed: {exc}")
+        target.write_bytes(path.read_bytes())
+        _git("add", name, cwd=CLONE_DIR)
+        staged = subprocess.run(
+            ["git", "diff", "--cached", "--quiet"], cwd=CLONE_DIR,
+            capture_output=True,
+        )
+        if staged.returncode == 0:
+            return  # nothing changed since the last sync
+        _git("commit", "-m", f"sync {name}", cwd=CLONE_DIR)
+        _git("push", cwd=CLONE_DIR)
+    except subprocess.CalledProcessError as exc:
+        print(f"warn: state sync of {name} failed: {exc.stderr.strip()[:200]}")
 
 
 def main() -> None:
@@ -81,7 +91,7 @@ def main() -> None:
         raise SystemExit("TELEGRAM_BOT_TOKEN is not set")
     bot = TelegramBot(settings, token, allowed)
 
-    if GIST_ID:
+    if CLONE_DIR is not None:
         # offset/owner state: sync after every update batch
         orig_save_state = bot._save_state
 
@@ -96,8 +106,8 @@ def main() -> None:
 
         def session_with_sync(chat_id: int):
             sess = orig_session(chat_id)
-            if not getattr(sess, "_gist_synced", False):
-                sess._gist_synced = True  # type: ignore[attr-defined]
+            if not getattr(sess, "_state_synced", False):
+                sess._state_synced = True  # type: ignore[attr-defined]
                 orig_save = sess._save
 
                 def save() -> None:

@@ -33,7 +33,7 @@ The user has no computer — a phone-reachable chat became the priority
 - [x] Mobile-first web chat: stdlib server + one embedded page, passcode-gated, rate-limited
 - [x] Shared ChatSession core: transcript memory persisted across restarts, per-message budgets
 - [x] Citation-checked answers in chat (live Cohere run: research turn with verified sources)
-- [x] Free hosting: `deploy/gha-telegram/` — GitHub Actions runner + private-gist state sync (HF Space recipe kept for PRO accounts)
+- [x] Free hosting: `deploy/gha-telegram/` — GitHub Actions runner + private-repo state sync (HF Space recipe kept for PRO accounts)
 - [ ] Telegram inline approval buttons (stays in Phase 7 — makes write-tools usable in chat)
 
 ## Phase 3 — Persistence, tasks & memory

@@ -33,15 +33,15 @@ jobs:
 
       - name: Install woyo
         if: steps.gate.outputs.has_token == 'true'
-        run: pip install "woyo[search,extract] @ git+https://github.com/bessghiermohamed/woyo.git@v0.3.1"
+        run: pip install "woyo[search,extract] @ git+https://github.com/bessghiermohamed/woyo.git@v0.3.2"
 
-      - name: Run the bot (state synced to a private gist)
+      - name: Run the bot (state synced to a private repo)
         if: steps.gate.outputs.has_token == 'true'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
-          BOT_STATE_GIST_ID: ${{ secrets.BOT_STATE_GIST_ID }}
-          BOT_STATE_GIST_TOKEN: ${{ secrets.BOT_STATE_GIST_TOKEN }}
+          BOT_STATE_REPO: ${{ secrets.BOT_STATE_REPO }}
+          BOT_STATE_TOKEN: ${{ secrets.BOT_STATE_TOKEN }}
           WOYO_PROVIDER: cohere
           WOYO_MODEL: command-a-03-2025
           WOYO_TIMEZONE: Africa/Algiers
