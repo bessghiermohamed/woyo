@@ -326,6 +326,61 @@ async def test_telegram_409_is_explicit(tmp_path):
     await client.aclose()
 
 
+async def test_telegram_409_stops_run_forever(tmp_path):
+    """A 409 mid-poll stops the bot loudly instead of retrying forever."""
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        method = request.url.path.rsplit("/", 1)[-1]
+        if method == "getMe":
+            return httpx.Response(200, json={"ok": True, "result": {"username": "woyo_bot"}})
+        return httpx.Response(409, json={"ok": False})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    bot = TelegramBot(
+        make_settings(), "T:x", set(), client=client, state_path=tmp_path / "s.json"
+    )
+    with pytest.raises(RuntimeError, match="409"):
+        await asyncio.wait_for(bot.run_forever(), timeout=2)
+    await client.aclose()
+    assert calls["n"] == 2  # getMe then one poll — no retry loop
+
+
+async def test_telegram_skips_backlog_on_fresh_state(tmp_path):
+    """Ephemeral host, no stored offset: pending updates are dropped, not answered."""
+    seen_offsets: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        method = request.url.path.rsplit("/", 1)[-1]
+        params = json.loads(request.read())
+        if method == "getMe":
+            return httpx.Response(200, json={"ok": True, "result": {"username": "b"}})
+        seen_offsets.append(params.get("offset"))
+        if params.get("offset") == -1:  # backlog probe
+            return httpx.Response(
+                200,
+                json={"ok": True, "result": [{"update_id": 41}, {"update_id": 99}]},
+            )
+        return httpx.Response(200, json={"ok": True, "result": []})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    state = tmp_path / "state.json"
+    bot = TelegramBot(make_settings(), "T:x", set(), client=client, state_path=state)
+    assert bot._had_state is False
+    await bot._skip_backlog()
+    assert bot._offset == 100
+    assert json.loads(state.read_text())["offset"] == 100
+    await bot._poll()  # normal polling continues from the new offset
+    assert seen_offsets == [-1, 100]
+    await client.aclose()
+
+    # a restart WITH state must not probe the backlog again
+    bot2 = TelegramBot(make_settings(), "T:x", set(), state_path=state)
+    assert bot2._had_state is True
+    assert bot2._offset == 100
+
+
 def test_telegram_credentials_from_env(monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123:abc")
     monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", "42, 7; bad")

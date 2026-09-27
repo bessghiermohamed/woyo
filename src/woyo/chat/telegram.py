@@ -97,6 +97,7 @@ class TelegramBot:
         self._client = client or httpx.AsyncClient(timeout=_HTTP_TIMEOUT)
         self._offset = 0
         self._owner: int | None = None
+        self._had_state = self.state_path.exists()
         self._sessions: dict[int, ChatSession] = {}
         self._locks: dict[int, asyncio.Lock] = {}
         self._load_state()
@@ -107,6 +108,8 @@ class TelegramBot:
         bot_name = me.get("username", "?")
         log.info("logged in as @%s — polling for messages…", bot_name)
         print(f"woyo telegram bot @{bot_name} is up — Ctrl-C to stop")
+        if not self._had_state:
+            await self._skip_backlog()
         while True:
             try:
                 updates = await self._poll()
@@ -114,9 +117,30 @@ class TelegramBot:
                     await self._dispatch(update)
             except asyncio.CancelledError:
                 raise
+            except RuntimeError as exc:
+                if "409" in str(exc):
+                    # another instance holds this token — stop loudly, not in a loop
+                    print(f"stopping: {exc}")
+                    raise
+                log.error("poll cycle failed: %s", exc)
+                await asyncio.sleep(3)
             except Exception as exc:  # noqa: BLE001 — the poller must survive
                 log.error("poll cycle failed: %s", exc)
                 await asyncio.sleep(3)
+
+    async def _skip_backlog(self) -> None:
+        """Fresh start with no persisted offset: confirm-and-drop pending updates.
+
+        Messages that arrived while the bot was down are skipped rather than
+        re-answered — for a personal assistant, duplicate replies are worse
+        than a gap. Ephemeral hosts (GitHub Actions runners) rely on this.
+        """
+        result = await self._api("getUpdates", timeout=0, offset=-1)
+        updates = result if isinstance(result, list) else []
+        if updates:
+            self._offset = int(updates[-1]["update_id"]) + 1
+            log.info("skipped %s update(s) that predate this start", len(updates))
+            self._save_state()
 
     async def _poll(self) -> list[dict]:
         # _api() already unwraps the "result" envelope

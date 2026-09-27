@@ -26,6 +26,14 @@ This Space runs the `woyo` package from
 | `WOYO_PROVIDER` / `WOYO_MODEL` | e.g. `cohere` / `command-a-03-2025` |
 | `TELEGRAM_BOT_TOKEN` | optional — enables the Telegram bot alongside the web chat |
 
+## ⚠️ Free-tier note (Sept 2026)
+
+Hugging Face now requires a **PRO subscription** to host Docker/Gradio
+Spaces on free `cpu-basic` hardware (free accounts get *static* Spaces
+only). This recipe is complete and correct — it works as soon as the
+account has PRO. For a $0 always-on alternative that needs no new
+accounts, see `deploy/gha-telegram/` (GitHub Actions runner).
+
 ## Notes
 
 - Free CPU Spaces sleep after ~48h without HTTP traffic. Ping

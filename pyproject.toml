@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "woyo"
-version = "0.3.0"
+version = "0.3.1"
 description = "General-purpose AI agent: understands goals, plans, uses tools, verifies results, and reports back - with human control built in."
 readme = "README.md"
 requires-python = ">=3.11"

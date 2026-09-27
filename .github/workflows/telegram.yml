@@ -1,0 +1,48 @@
+name: telegram bot
+
+on:
+  schedule:
+    - cron: "*/30 * * * *" # one live run at a time; the queue keeps it ~24/7
+  workflow_dispatch:
+
+concurrency:
+  group: telegram-bot
+  cancel-in-progress: false
+
+jobs:
+  bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350 # GitHub's per-job ceiling is 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Gate on the bot token
+        id: gate
+        run: |
+          if [ -z "${{ secrets.TELEGRAM_BOT_TOKEN }}" ]; then
+            echo "has_token=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::TELEGRAM_BOT_TOKEN secret is not set. Add it in Settings -> Secrets and variables -> Actions to bring the bot online."
+          else
+            echo "has_token=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.has_token == 'true'
+        with:
+          python-version: "3.12"
+
+      - name: Install woyo
+        if: steps.gate.outputs.has_token == 'true'
+        run: pip install "woyo[search,extract] @ git+https://github.com/bessghiermohamed/woyo.git@v0.3.1"
+
+      - name: Run the bot (state synced to a private gist)
+        if: steps.gate.outputs.has_token == 'true'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          COHERE_API_KEY: ${{ secrets.COHERE_API_KEY }}
+          BOT_STATE_GIST_ID: ${{ secrets.BOT_STATE_GIST_ID }}
+          BOT_STATE_GIST_TOKEN: ${{ secrets.BOT_STATE_GIST_TOKEN }}
+          WOYO_PROVIDER: cohere
+          WOYO_MODEL: command-a-03-2025
+          WOYO_TIMEZONE: Africa/Algiers
+        run: python deploy/gha-telegram/run_bot.py
