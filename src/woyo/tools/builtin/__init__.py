@@ -14,8 +14,10 @@ from woyo.tools.builtin.core_tools import (
     NowTool,
     PythonExecTool,
 )
+from woyo.tools.builtin.crawl_site import CrawlSiteTool
 from woyo.tools.builtin.fetch_url import FetchURLTool
 from woyo.tools.builtin.web_search import WebSearchTool
+from woyo.tools.http_cache import build_cache_from_settings
 
 
 def build_default_registry(
@@ -28,10 +30,17 @@ def build_default_registry(
 ) -> ToolRegistry:
     """Assemble the standard tool set (see ADR-6: search backends are adapters)."""
     registry = ToolRegistry(bus=bus, cap_chars=settings.tool_output_cap_chars)
+    cache = build_cache_from_settings(settings)
 
     tools: list[Tool] = [
-        WebSearchTool(backend=settings.search_backend, client=http_client),
-        FetchURLTool(client=http_client),
+        WebSearchTool(
+            backend=settings.search_backend,
+            client=http_client,
+            cache=cache,
+            cache_search_ttl_s=settings.cache_search_ttl_s,
+        ),
+        FetchURLTool(client=http_client, cache=cache),
+        CrawlSiteTool(client=http_client, cache=cache),
         CalculateTool(),
         NowTool(tz=settings.timezone),
         AskUserTool(interaction),
@@ -48,6 +57,7 @@ __all__ = [
     "build_default_registry",
     "WebSearchTool",
     "FetchURLTool",
+    "CrawlSiteTool",
     "CalculateTool",
     "NowTool",
     "AskUserTool",

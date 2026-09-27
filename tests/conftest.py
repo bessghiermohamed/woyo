@@ -103,6 +103,13 @@ class SlowTool(Tool):
 # --- helpers -----------------------------------------------------------------
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    """Tests must never touch the developer's real ~/.woyo cache."""
+    import os
+
+    os.environ.setdefault("WOYO_CACHE_ENABLED", "false")
+
+
 def make_settings(**kw) -> Settings:
     defaults = dict(
         provider="mock",

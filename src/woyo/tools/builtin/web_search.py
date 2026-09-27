@@ -1,19 +1,23 @@
 """web_search: pluggable search behind one tool (Tavily / Brave / DuckDuckGo).
 
 The agent never knows which backend is active — availability and cost become
-configuration, not architecture (ADR-6).
+configuration, not architecture (ADR-6). Phase 2: results are cached (1h TTL)
+so re-runs and repeated queries don't burn free-tier quota.
 """
 
 from __future__ import annotations
 
-import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from pydantic import BaseModel, Field
 
+from woyo.config import env_value
 from woyo.errors import ErrorKind, ToolError
 from woyo.tools.base import Tool, ToolResult
+
+if TYPE_CHECKING:
+    from woyo.tools.http_cache import HttpCache
 
 
 class SearchArgs(BaseModel):
@@ -149,25 +153,28 @@ class WebSearchTool(Tool):
     timeout_s = 30.0
     Args = SearchArgs
 
-    def __init__(self, backend: str | None = None, client: httpx.AsyncClient | None = None):
+    def __init__(self, backend: str | None = None, client: httpx.AsyncClient | None = None,
+                 cache: HttpCache | None = None, cache_search_ttl_s: int = 3_600):
         self._client = client
+        self._cache = cache
+        self._cache_ttl = cache_search_ttl_s
         self._backend: Any = None
         self._missing: str | None = None
-        chosen = backend or os.environ.get("WOYO_SEARCH_BACKEND") or None
+        chosen = backend or env_value("WOYO_SEARCH_BACKEND") or None
         if not chosen:
-            if os.environ.get("TAVILY_API_KEY"):
+            if env_value("TAVILY_API_KEY"):
                 chosen = "tavily"
-            elif os.environ.get("BRAVE_API_KEY"):
+            elif env_value("BRAVE_API_KEY"):
                 chosen = "brave"
             else:
                 chosen = "ddg"
         self._backend_name = chosen.lower()
         try:
             if self._backend_name == "tavily":
-                key = os.environ.get("TAVILY_API_KEY", "")
+                key = env_value("TAVILY_API_KEY") or ""
                 self._backend: Any = TavilyBackend(key, client)
             elif self._backend_name == "brave":
-                key = os.environ.get("BRAVE_API_KEY", "")
+                key = env_value("BRAVE_API_KEY") or ""
                 self._backend = BraveBackend(key, client)
             elif self._backend_name == "ddg":
                 self._backend = DuckDuckGoBackend()
@@ -183,7 +190,23 @@ class WebSearchTool(Tool):
     async def run(self, args: SearchArgs) -> ToolResult:
         if self._missing:
             return ToolResult.error(ErrorKind.CONFIG, self._missing)
-        hits = await self._backend.search(args.query, args.max_results)
+        hits: list[SearchHit] | None = None
+        if self._cache is not None:
+            cached = self._cache.get(
+                "search", f"{self._backend_name}:{args.query}:{args.max_results}",
+                ttl_s=self._cache_ttl,
+            )
+            if cached is not None:
+                hits = [SearchHit(**h) for h in cached]
+        from_cache = hits is not None
+        if hits is None:
+            hits = await self._backend.search(args.query, args.max_results)
+            if self._cache is not None:
+                self._cache.put(
+                    "search",
+                    f"{self._backend_name}:{args.query}:{args.max_results}",
+                    [h.model_dump() for h in hits],
+                )
         if not hits:
             return ToolResult.error(
                 ErrorKind.TOOL_FAILURE,
@@ -193,7 +216,7 @@ class WebSearchTool(Tool):
         for i, hit in enumerate(hits, 1):
             lines.append(f"{i}. {hit.title}\n   URL: {hit.url}\n   {hit.snippet}")
         return ToolResult.ok_result(
-            "\n".join(lines),
+            ("[from cache] " if from_cache else "") + "\n".join(lines),
             untrusted=True,
             data={
                 "source": f"web-search:{self._backend_name}",

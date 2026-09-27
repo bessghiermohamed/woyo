@@ -16,6 +16,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
+from woyo.agent.citations import collect_observed_urls, normalize_url, verify_sources
 from woyo.agent.planner import create_plan
 from woyo.agent.prompts import executor_system_prompt
 from woyo.agent.results import RunResult, build_usage_report
@@ -28,6 +29,8 @@ from woyo.models.router import ModelRouter
 from woyo.tools.base import Permission, ToolRegistry, ToolResult
 
 ApprovalCallback = Callable[[str, str], bool]  # (tool_name, args_json) -> approved
+
+_SEARCH_TOOLS = {"web_search", "crawl_site"}
 
 
 class Agent:
@@ -83,9 +86,11 @@ class Agent:
         # 2) EXECUTE LOOP ----------------------------------------------
         steps = 0
         tool_calls = 0
+        search_calls = 0
         consecutive_failures = 0
         text_only_strikes = 0
         repeat_counter: Counter[tuple[str, str]] = Counter()
+        observed_urls: set[str] = set()
         outcome = "failed"
         outcome_detail = ""
         final: dict[str, Any] | None = None
@@ -131,8 +136,10 @@ class Agent:
                     Message(
                         role="user",
                         content=(
-                            "Continue with your tools, or call `finish` with your "
-                            "final summary when the task is done."
+                            "Respond with TOOL CALLS, not prose. If the task is "
+                            "done, call the `finish` tool NOW with your final "
+                            "summary, `verified`, and `sources`. Do not describe "
+                            "what you will do — do it."
                         ),
                     )
                 )
@@ -141,10 +148,40 @@ class Agent:
             text_only_strikes = 0
             stop_reason: str | None = None
             for tc in resp.tool_calls:
+                # per-task search budget (Phase 2)
+                if tc.name in _SEARCH_TOOLS and search_calls >= self.settings.max_search_calls:
+                    self.bus.emit(
+                        "limit_hit",
+                        limit=f"search budget ({self.settings.max_search_calls} calls)",
+                    )
+                    result = ToolResult.error(
+                        ErrorKind.INVALID_INPUT,
+                        "Search budget for this task is exhausted. Do NOT search "
+                        "or crawl again — work with the material already in "
+                        "your context and finish.",
+                    )
+                    messages.append(
+                        Message(
+                            role="tool",
+                            tool_call_id=tc.id,
+                            name=tc.name,
+                            content=self._observation_text(result),
+                        )
+                    )
+                    tool_calls += 1
+                    continue
+
                 result, finish_payload, blocked_reason = await self._execute_one(
                     tc,
                     approval_cb=approval_cb,
                     repeat_counter=repeat_counter,
+                )
+                if tc.name in _SEARCH_TOOLS:
+                    search_calls += 1
+                observed_urls.update(
+                    normalize_url(u)
+                    for u in collect_observed_urls(result)
+                    if normalize_url(u)
                 )
                 observation = self._observation_text(result)
                 messages.append(
@@ -189,6 +226,22 @@ class Agent:
                 "open_questions": [task],
                 "sources": [],
             }
+
+        # citation verification: claimed sources must have been observed
+        verified_sources, dropped_sources = verify_sources(
+            final.get("sources"), observed_urls
+        )
+        if dropped_sources:
+            self.bus.emit(
+                "citation_flagged",
+                dropped=[s.get("url", "") for s in dropped_sources][:5],
+            )
+            final["sources"] = verified_sources
+            final.setdefault("open_questions", []).append(
+                "Some cited sources could not be verified against the pages "
+                "actually seen this run and were removed."
+            )
+
         result = RunResult(
             task=task,
             outcome=outcome,
@@ -197,6 +250,9 @@ class Agent:
             plan=plan,
             verified=bool(final.get("verified")),
             sources=final.get("sources") or [],
+            sources_dropped=[
+                s.get("url", "") for s in dropped_sources if isinstance(s, dict)
+            ],
             open_questions=final.get("open_questions") or [],
             usage=build_usage_report(self.router.usage_summary(), tool_calls),
             duration_s=time.monotonic() - started,

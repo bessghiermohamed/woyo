@@ -12,13 +12,17 @@ Core loop (plan → act → observe → adapt → verify → finish), tool syste
 - [x] Budgets: all limits enforced with honest partial results
 - [x] Tests: whole suite green without network or API keys
 
-## Phase 2 — Research depth
+## Phase 2 — Research depth ✅ (v0.2)
 
 Robust `web_search`/`fetch_url` in the field: content extraction quality (trafilatura), result caching (URL → content, TTL), source tracking enforced in `finish`, comparison/cross-check patterns in executor prompts, per-task search budgets.
 
-- [ ] Agent completes a multi-source comparison task and cites accurate URLs
-- [ ] Repeated fetches of the same URL within a run hit cache
-- [ ] Extraction quality spot-check on 20 diverse pages
+- [x] Agent completes a multi-source comparison task and cites accurate URLs (live Cohere run, v0.2 smoke test)
+- [x] Repeated fetches of the same URL within a run hit cache (SQLite, 24h pages / 1h searches; test + live)
+- [x] Bounded `crawl_site` tool: same-origin, page budget, politeness delay, cache-aware
+- [x] Citation verification: claimed sources matched against URLs actually observed; invented ones dropped + flagged (`citation_flagged` event, `sources_dropped` in the report)
+- [x] Cross-check guidance in executor prompts (two independent sources; report disagreements)
+- [x] Per-task search budget (`WOYO_MAX_SEARCH_CALLS`, default 12)
+- [ ] Extraction quality spot-check on 20 diverse pages (10 checked live: 8/8 reachable pages extracted well — 360 to 16,588 words; 1 rate-limited by target, 1 bad URL — rolling)
 
 ## Phase 3 — Persistence, tasks & memory
 

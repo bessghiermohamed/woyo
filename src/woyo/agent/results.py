@@ -26,6 +26,7 @@ class RunResult:
     plan: TaskPlan | None = None
     verified: bool = False
     sources: list[dict[str, str]] = field(default_factory=list)
+    sources_dropped: list[str] = field(default_factory=list)
     open_questions: list[str] = field(default_factory=list)
     usage: UsageReport = field(default_factory=UsageReport)
     duration_s: float = 0.0
@@ -52,6 +53,10 @@ class RunResult:
         if self.sources:
             lines.append("sources     :")
             lines += [f"  - {s.get('url', '')} {s.get('title', '')}" for s in self.sources]
+        if self.sources_dropped:
+            lines.append(
+                f"dropped     : {len(self.sources_dropped)} unverifiable citation(s)"
+            )
         if self.open_questions:
             lines.append("open        :")
             lines += [f"  ? {q}" for q in self.open_questions]
@@ -65,6 +70,7 @@ class RunResult:
             "final_answer": self.final_answer,
             "verified": self.verified,
             "sources": self.sources,
+            "sources_dropped": self.sources_dropped,
             "open_questions": self.open_questions,
             "steps": self.steps,
             "duration_s": round(self.duration_s, 2),

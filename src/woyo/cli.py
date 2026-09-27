@@ -277,6 +277,27 @@ def doctor():
     except ImportError:
         checks.append(("calculate", False, "missing — pip install -e ."))
 
+    if settings.cache_enabled:
+        from woyo.tools.http_cache import build_cache_from_settings
+
+        try:
+            cache = build_cache_from_settings(settings)
+            stats = cache.stats() if cache else {}
+            cache.close() if cache else None
+            checks.append(
+                (
+                    "cache",
+                    True,
+                    f"enabled — {stats.get('entries', 0)} entries, "
+                    f"{stats.get('bytes', 0) // 1024} KB "
+                    f"({settings.cache_dir}/cache.sqlite3)",
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — diagnostics must not crash
+            checks.append(("cache", False, f"enabled but unusable: {exc}"))
+    else:
+        checks.append(("cache", False, "disabled (WOYO_CACHE_ENABLED=false)"))
+
     checks.append(
         (
             "code exec",

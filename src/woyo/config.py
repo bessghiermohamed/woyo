@@ -97,6 +97,13 @@ class Settings(BaseSettings):
 
     # --- search ---
     search_backend: str | None = None  # tavily | brave | ddg (None = auto)
+    max_search_calls: int = 12  # per task: web_search + crawl_site combined
+
+    # --- research cache (Phase 2) ---
+    cache_enabled: bool = True
+    cache_dir: str = "~/.woyo"
+    cache_ttl_s: int = 86_400       # fetched pages: 24h
+    cache_search_ttl_s: int = 3_600  # search results: 1h
 
     # --- context management ---
     context_soft_limit_tokens: int = 24_000

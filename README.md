@@ -2,6 +2,8 @@
 
 **A general-purpose AI agent you own.** Give woyo a goal — not a procedure. It understands the task, makes a plan, picks the right tools, acts, observes what happened, adapts when things break, and reports back with sources and honest uncertainty. Human approval is built in wherever actions have consequences.
 
+> 🌐 Project site: **https://bessghiermohamed.github.io/woyo/**
+
 > *"Find volunteering opportunities that match my profile, check their requirements, and tell me which ones I'm actually eligible for."* — this is the level woyo is built for. You should not have to specify the websites, the queries, or the steps.
 
 ```
@@ -26,9 +28,11 @@ Most "AI agents" are chatbots with an agent-themed UI. woyo is a from-scratch ag
 
 ## Status
 
-**Phase 1 (MVP) — working.** Agent core loop, planner, tool system with permissions, model routing, budget enforcement, injection defenses, CLI with live task view, full mock-driven test suite.
+**Phase 1 (MVP) — done (v0.1).** Agent core loop, planner, tool system with permissions, model routing, budget enforcement, injection defenses, CLI with live task view, full mock-driven test suite.
 
-Roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) — next up: deep research (Phase 2), persistent tasks & memory (Phase 3), real code sandbox (Phase 4), browser automation (Phase 5), web UI (Phase 6).
+**Phase 2 (research depth) — done (v0.2).** SQLite response cache (24h pages / 1h searches) so repeated fetches never re-hit the network, `crawl_site` bounded same-origin crawler, **citation verification** (claimed sources are matched against URLs actually observed in the run — invented citations are dropped and flagged), cross-check guidance in executor prompts, per-task search budgets. Plus a project site on GitHub Pages.
+
+Roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) — next up: persistent tasks & memory (Phase 3), real code sandbox (Phase 4), browser automation (Phase 5), web UI (Phase 6).
 
 ## Quickstart
 
@@ -84,17 +88,18 @@ woyo is designed to run at $0 for typical use:
 
 </details>
 
-## Built-in tools (v0.1)
+## Built-in tools (v0.2)
 
 | Tool | What it does | Permission |
 |---|---|---|
-| `web_search` | Web search via Tavily / Brave / DuckDuckGo (auto-detected) | read-only |
-| `fetch_url` | Fetch a page, extract main content (SSRF-hardened) | read-only |
+| `web_search` | Web search via Tavily / Brave / DuckDuckGo (auto-detected, results cached 1h) | read-only |
+| `fetch_url` | Fetch a page, extract main content (SSRF-hardened, cached 24h) | read-only |
+| `crawl_site` | Bounded same-origin crawl: several pages from one site in one call | read-only |
 | `calculate` | Safe math expressions | read-only |
 | `now` | Current date/time in your timezone | read-only |
 | `ask_user` | Ask the human a question when blocked | read-only |
-| `finish` | End the task with summary, verification, sources | control |
-| `python_exec` | Sandboxed Python (disabled by default; dev-grade sandboxing in v0.1 — see SECURITY.md) | sandboxed |
+| `finish` | End the task with summary, verification, **citation-checked** sources | control |
+| `python_exec` | Sandboxed Python (disabled by default; dev-grade sandboxing in v0.2 — see SECURITY.md) | sandboxed |
 
 Adding your own tool takes ~20 lines:
 
