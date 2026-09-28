@@ -114,6 +114,8 @@ def pytest_configure(config: pytest.Config) -> None:
     tmp = tempfile.mkdtemp(prefix="woyo-test-")
     os.environ.setdefault("WOYO_DB_PATH", os.path.join(tmp, "test.sqlite3"))
     os.environ.setdefault("WOYO_MEMORY_ENABLED", "false")
+    # v0.5 sandbox: never write code/workspace artifacts into the real ~/.woyo
+    os.environ.setdefault("WOYO_WORKSPACE_DIR", os.path.join(tmp, "workspace"))
 
 
 def make_settings(**kw) -> Settings:

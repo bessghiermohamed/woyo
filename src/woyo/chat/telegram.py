@@ -9,13 +9,19 @@ httpx client woyo already ships. Safety properties:
   else is refused. The claim persists in ~/.woyo/telegram_state.json.
 - Replies are chunked to fit Telegram's 4096-char message limit and
   fall back from Markdown to plain text when parsing fails.
-- One in-flight run per chat; a global 409 means another instance is
-  polling with the same token (only one may run).
+- One in-flight run per chat (lock); message handling runs as tasks so
+  the poller keeps receiving — that is what makes inline Approve/Deny
+  buttons possible while an agent run is waiting on an approval.
+- Approval buttons carry an id bound to the chat that was asked; presses
+  from any other chat are ignored. No press within the timeout = deny.
+- A global 409 means another instance is polling with the same token
+  (only one may run).
 """
 
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
 from pathlib import Path
@@ -35,8 +41,10 @@ _HTTP_TIMEOUT = httpx.Timeout(65.0, connect=15.0)
 
 WELCOME = (
     "👋 I'm *woyo* — an AI agent you can talk to.\n\n"
-    "Send me anything: questions to research, things to calculate, pages to read. "
-    "I plan, use tools (web search, page fetch, math) and cite verified sources.\n\n"
+    "Send me anything: questions to research, things to calculate, code to "
+    "run, files to work with. I plan, use tools — web search, page fetch, "
+    "Python, a workspace with files, sub-agents, and (with your approval) "
+    "shell commands — and I cite verified sources.\n\n"
     "Commands:\n"
     "/new — start a fresh conversation\n"
     "/status — usage so far\n"
@@ -100,6 +108,9 @@ class TelegramBot:
         self._had_state = self.state_path.exists()
         self._sessions: dict[int, ChatSession] = {}
         self._locks: dict[int, asyncio.Lock] = {}
+        # approval id -> (future, chat_id that was asked)
+        self._pending: dict[str, tuple[asyncio.Future[bool], int]] = {}
+        self._approval_seq = 0
         self._load_state()
 
     # ------------------------------------------------------------------
@@ -153,6 +164,10 @@ class TelegramBot:
 
     # ------------------------------------------------------------------
     async def _dispatch(self, update: dict) -> None:
+        callback = update.get("callback_query")
+        if callback:
+            await self._handle_callback(callback)
+            return
         msg = update.get("message") or update.get("edited_message") or {}
         chat_id = int((msg.get("chat") or {}).get("id", 0))
         if not chat_id:
@@ -167,7 +182,15 @@ class TelegramBot:
         if text.startswith("/"):
             await self._command(chat_id, text)
             return
-        await self._answer(chat_id, text)
+        # Run as a task so the poller keeps receiving updates — this is
+        # what lets a button press arrive while the run awaits an approval.
+        task = asyncio.create_task(self._answer(chat_id, text))
+        task.add_done_callback(self._log_task_crash)
+
+    @staticmethod
+    def _log_task_crash(task: asyncio.Task) -> None:  # pragma: no cover
+        if not task.cancelled() and task.exception():
+            log.error("answer task crashed: %s", task.exception())
 
     def _authorized(self, chat_id: int) -> bool:
         if self.allowed:
@@ -206,7 +229,12 @@ class TelegramBot:
         async with lock:
             typing = asyncio.create_task(self._typing_loop(chat_id))
             try:
-                reply = await self._session(chat_id).send(text)
+                reply = await self._session(chat_id).send(
+                    text,
+                    approval_cb=lambda tool, args: self._request_approval(
+                        chat_id, tool, args
+                    ),
+                )
                 await self._send_reply(chat_id, reply)
             except AgentError as exc:
                 await self._send(chat_id, f"⚠️ {exc}")
@@ -215,6 +243,91 @@ class TelegramBot:
                 await self._send(chat_id, f"⚠️ Something went wrong: {exc}")
             finally:
                 typing.cancel()
+
+    # ------------------------------------------------------------------
+    # Inline approval buttons (Phase 7 capability, pulled forward)
+    # ------------------------------------------------------------------
+    async def _request_approval(self, chat_id: int, tool: str, args_json: str) -> bool:
+        """Ask `chat_id` to approve a tool call via inline buttons.
+
+        Returns True only on an explicit Approve press from that same chat
+        within chat_approval_timeout_s. Timeout, deny, or a press from any
+        other chat => denied (fail safe).
+        """
+        self._approval_seq += 1
+        ap_id = str(self._approval_seq)
+        fut: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
+        self._pending[ap_id] = (fut, chat_id)
+
+        try:
+            pretty = json.dumps(json.loads(args_json or "{}"), indent=2, ensure_ascii=False)
+        except ValueError:
+            pretty = args_json or "{}"
+        text = (
+            "🔐 <b>Approval needed</b>\n\n"
+            f"Tool: <code>{html.escape(tool)}</code>\n\n"
+            f"<pre>{html.escape(pretty[:1200])}</pre>\n\n"
+            "Approve this action?"
+        )
+        keyboard = {
+            "inline_keyboard": [[
+                {"text": "✅ Approve", "callback_data": f"woyo_apr:{ap_id}:1"},
+                {"text": "❌ Deny", "callback_data": f"woyo_apr:{ap_id}:0"},
+            ]]
+        }
+        sent = await self._api(
+            "sendMessage", chat_id=chat_id, text=text,
+            parse_mode="HTML", reply_markup=keyboard,
+        )
+        message_id = (sent or {}).get("message_id")
+
+        approved = False
+        try:
+            approved = await asyncio.wait_for(
+                fut, timeout=self.settings.chat_approval_timeout_s
+            )
+        except TimeoutError:
+            approved = False
+        finally:
+            self._pending.pop(ap_id, None)
+
+        verdict = "✅ approved" if approved else "❌ denied (timeout counts as deny)"
+        if message_id is not None:
+            try:
+                await self._api(
+                    "editMessageText", chat_id=chat_id, message_id=message_id,
+                    text=f"🔐 {html.escape(tool)} — {verdict}",
+                )
+            except Exception:  # noqa: BLE001 — cosmetic edit only
+                pass
+        return approved
+
+    async def _handle_callback(self, callback: dict) -> None:
+        """Resolve a pending approval when its button is pressed."""
+        cbq_id = callback.get("id")
+        data = str(callback.get("data", ""))
+        chat_id = int(((callback.get("message") or {}).get("chat") or {}).get("id", 0))
+        try:
+            await self._api("answerCallbackQuery", callback_query_id=cbq_id)
+        except Exception:  # noqa: BLE001 — never crash the poller
+            pass
+        if not data.startswith("woyo_apr:"):
+            return
+        parts = data.split(":")
+        if len(parts) != 3:
+            return
+        _, ap_id, verdict = parts
+        entry = self._pending.get(ap_id)
+        if entry is None:
+            return
+        fut, asked_chat = entry
+        # only the chat that was asked (and is still authorized) may answer
+        if chat_id != asked_chat or not self._authorized(chat_id):
+            log.warning("approval press from wrong chat %s ignored", chat_id)
+            return
+        self._pending.pop(ap_id, None)
+        if not fut.done():
+            fut.set_result(verdict == "1")
 
     async def _send_reply(self, chat_id: int, reply: ChatReply) -> None:
         text = reply.render()

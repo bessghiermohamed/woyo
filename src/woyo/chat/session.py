@@ -100,8 +100,10 @@ def _default_agent_factory(settings: Settings, bus: EventBus) -> Agent:
     from woyo.memory.longterm import build_memory_from_settings
 
     memory = build_memory_from_settings(settings)
-    registry = build_default_registry(settings, bus=bus, memory=memory)
     router = ModelRouter(settings, bus=bus)
+    registry = build_default_registry(
+        settings, bus=bus, memory=memory, router=router
+    )
     return Agent(settings, router, registry, bus=bus, memory=memory)
 
 
@@ -134,8 +136,14 @@ class ChatSession:
         self._roll_day()
 
     # ------------------------------------------------------------------
-    async def send(self, message: str) -> ChatReply:
-        """Process one user message through a fresh agent run."""
+    async def send(self, message: str, *, approval_cb=None) -> ChatReply:
+        """Process one user message through a fresh agent run.
+
+        `approval_cb` (optional, sync or async) is offered to the agent for
+        tools that act externally — e.g. the Telegram frontend shows inline
+        Approve/Deny buttons and waits for the press. Without a channel the
+        loop fails safe (deny), same as headless runs.
+        """
         message = message.strip()
         if not message:
             raise AgentError("empty message")
@@ -147,7 +155,7 @@ class ChatSession:
 
         bus = EventBus()
         agent = self._agent_factory(self.settings, bus)
-        result = await agent.run(self._frame_task(message))
+        result = await agent.run(self._frame_task(message), approval_cb=approval_cb)
         self.store.append_events(self.session_id, result.events_log)
 
         self.history.append(("user", message))

@@ -94,6 +94,7 @@ class Settings(BaseSettings):
     # --- safety ---
     require_approval: bool = True
     enable_code_exec: bool = False
+    enable_shell: bool = False  # shell_exec: approval AND this flag (double deny)
 
     # --- search ---
     search_backend: str | None = None  # tavily | brave | ddg (None = auto)
@@ -109,11 +110,22 @@ class Settings(BaseSettings):
     context_soft_limit_tokens: int = 24_000
     tool_output_cap_chars: int = 12_000
 
+    # --- execution sandbox & workspace (Phase 4, v0.5) ---
+    workspace_dir: str = "~/.woyo/workspace"  # persistent cwd for code/shell
+    sandbox_backend: str = "local"  # local | docker (docker = --network none)
+
+    # --- sub-agents (v0.5) ---
+    subagent_max_steps: int = 6
+    subagent_max_time_s: float = 90.0
+    subagent_max_cost_usd: float = 0.10
+    subagent_max_search_calls: int = 4
+
     # --- chat frontends (v0.3) ---
     chat_password: str | None = None  # required to expose web chat beyond localhost
     chat_history_turns: int = 12  # transcript turns sent as context per message
     chat_daily_messages: int = 200  # per chat, per day
     direct_text_replies: bool = False  # chat: accept prose as the final answer
+    chat_approval_timeout_s: int = 120  # telegram inline-button wait
 
     # --- persistence, tasks & memory (Phase 3, v0.4) ---
     db_path: str = "~/.woyo/woyo.sqlite3"  # tasks + memories (WAL)

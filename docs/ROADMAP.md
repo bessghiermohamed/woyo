@@ -44,12 +44,14 @@ SQLite store; task state machine (pending/running/waiting_approval/paused/comple
 - [x] User can list/inspect/delete every memory item — *`woyo memory list|show|delete|prune|stats`, exercised live*
 - [x] Memory measurably helps a follow-up task (repeat-question test) — *verified live across processes: fact stored via `memory_save`, fresh process answered "what's my cat's name?" with 0 web searches; recall threshold calibrated on measured similarities*
 
-## Phase 4 — Real code sandbox
+## Phase 4 — Real code sandbox ✅ (v0.5.0)
 
 Replace dev-grade `python_exec` with container isolation (Docker, or E2B as optional hosted path): no host network by default, resource caps, filesystem scoping, image pinning. Add file tools (workspace read/write/list) scoped to a task directory. Document a threat model for executed code.
 
-- [ ] Sandbox escape attempts in tests stay contained (no host FS, no network unless granted)
-- [ ] Agent analyzes a CSV dataset end-to-end and produces a report file
+Shipped in v0.5.0: two-tier sandbox — `local` backend (isolated interpreter `-I`, POSIX rlimits, **scrubbed env** so runner secrets never inherit, persistent workspace cwd) and `docker` backend (`--network none`, memory/cpu caps, throwaway container per call); workspace file tools (read/write/list) with path-traversal protection; `shell_exec` terminal (approval-gated **and** default-off); `spawn_agent` sub-agents (depth-1, shared router = one budget); Telegram inline Approve/Deny buttons (pulled forward from Phase 7 — the approval channel that makes write tools usable from a phone).
+
+- [x] Sandbox escape attempts in tests stay contained — *path-traversal blocked (read/write/list), env scrubbing verified against planted secrets (TELEGRAM_BOT_TOKEN/BOT_STATE_TOKEN never visible to child processes), timeout kill, output caps; docker backend runs `--network none`*
+- [x] Agent analyzes a CSV dataset end-to-end and produces a report file — *verified live on Cohere: write_file → python_exec over the file → correct sum/product reported (12.4s); sub-agent delegation verified live (research micro-task, 36.7s)*
 
 ## Phase 5 — Browser automation
 

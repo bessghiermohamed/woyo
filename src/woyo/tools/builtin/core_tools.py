@@ -1,19 +1,17 @@
-"""Small built-in tools: calculate, now, ask_user, finish, python_exec."""
+"""Small built-in tools: calculate, now, ask_user, finish."""
 
 from __future__ import annotations
 
-import subprocess
-import sys
-import tempfile
 from datetime import UTC, datetime
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field
 
-from woyo.config import Settings
 from woyo.errors import ErrorKind
-from woyo.tools.base import Permission, Tool, ToolResult, UserInteraction
+from woyo.tools.base import Tool, ToolResult, UserInteraction
+
+# python_exec lives in sandbox.py since v0.5; re-exported here for compat
+from woyo.tools.builtin.sandbox import CodeArgs, PythonExecTool  # noqa: F401
 
 # --- calculate ---------------------------------------------------------------
 
@@ -114,7 +112,6 @@ class AskUserTool(Tool):
 
 
 # --- finish ------------------------------------------------------------------
-
 class Source(BaseModel):
     title: str = ""
     url: str = ""
@@ -155,70 +152,3 @@ class FinishTool(Tool):
                 "sources": [s.model_dump() for s in args.sources],
             },
         )
-
-
-# --- python_exec (dev-grade sandbox, disabled by default) --------------------
-
-class CodeArgs(BaseModel):
-    code: str = Field(min_length=1, max_length=20_000)
-    timeout_s: int = Field(default=20, ge=1, le=60)
-
-
-class PythonExecTool(Tool):
-    name = "python_exec"
-    description = (
-        "Run a short Python snippet for computation or data processing and "
-        "get stdout/stderr. Requires WOYO_ENABLE_CODE_EXEC=true. Keep code "
-        "self-contained; print() your results."
-    )
-    permission = Permission.SANDBOXED
-    timeout_s = 70.0
-    Args = CodeArgs
-
-    def __init__(self, settings: Settings):
-        self._settings = settings
-
-    async def run(self, args: CodeArgs) -> ToolResult:
-        if not self._settings.enable_code_exec:
-            return ToolResult.error(
-                ErrorKind.CONFIG,
-                "Code execution is disabled. Ask the user to set "
-                "WOYO_ENABLE_CODE_EXEC=true if they want it (v0.1 sandbox is "
-                "dev-grade; see docs/SECURITY.md).",
-            )
-        import asyncio
-        import resource
-
-        def _limits() -> None:  # runs in the child process
-            resource.setrlimit(resource.RLIMIT_CPU, (10, 10))
-            resource.setrlimit(resource.RLIMIT_AS, (512_000_000, 512_000_000))
-            resource.setrlimit(resource.RLIMIT_FSIZE, (8_000_000, 8_000_000))
-            resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
-
-        with tempfile.TemporaryDirectory(prefix="woyo-exec-") as tmp:
-            script = Path(tmp) / "snippet.py"
-            script.write_text(args.code, encoding="utf-8")
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    sys.executable, "-I", str(script),
-                    cwd=tmp,
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    preexec_fn=_limits,  # noqa: PLW1509 — POSIX-only by design
-                )
-            except OSError as exc:
-                return ToolResult.error(
-                    ErrorKind.TOOL_FAILURE, f"Failed to start sandbox: {exc}"
-                )
-            try:
-                out, _ = await asyncio.wait_for(
-                    proc.communicate(), timeout=args.timeout_s
-                )
-            except TimeoutError:
-                proc.kill()
-                return ToolResult.error(
-                    ErrorKind.TRANSIENT,
-                    f"Code exceeded {args.timeout_s}s and was killed.",
-                )
-        text = out.decode("utf-8", errors="replace")[:20_000]
-        status = "exit 0" if proc.returncode == 0 else f"exit {proc.returncode}"
-        return ToolResult.ok_result(f"[{status}]\n{text or '(no output)'}")

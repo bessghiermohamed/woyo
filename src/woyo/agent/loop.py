@@ -13,6 +13,7 @@ Design notes (see ARCHITECTURE.md §3):
 
 from __future__ import annotations
 
+import inspect
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -35,6 +36,8 @@ if TYPE_CHECKING:
     from woyo.memory.longterm import MemoryStore
 
 ApprovalCallback = Callable[[str, str], bool]  # (tool_name, args_json) -> approved
+# May also be async (e.g. the Telegram frontend shows inline buttons and
+# waits for the press) — the loop awaits awaitable results transparently.
 CheckpointCallback = Callable[[dict[str, Any]], None]  # RunState.to_dict() -> stored
 ControlPoll = Callable[[], str | None]  # -> "pause" | "cancel" | None
 
@@ -419,7 +422,8 @@ class Agent:
                 None,
             )
 
-        # approval gate (fail-safe: no channel -> deny)
+        # approval gate (fail-safe: no channel -> deny). The callback may be
+        # sync (CLI prompt) or async (chat inline buttons) — both are supported.
         needs_approval = tool.permission in (
             Permission.WRITES_EXTERNAL,
             Permission.DESTRUCTIVE,
@@ -428,7 +432,12 @@ class Agent:
             self.bus.emit(
                 "approval_requested", tool=tc.name, args_digest=tc.arguments[:120]
             )
-            approved = bool(approval_cb and approval_cb(tc.name, tc.arguments))
+            approved = False
+            if approval_cb:
+                outcome = approval_cb(tc.name, tc.arguments)
+                if inspect.isawaitable(outcome):
+                    outcome = await outcome
+                approved = bool(outcome)
             self.bus.emit("approval_result", tool=tc.name, approved=approved)
             if not approved:
                 return (

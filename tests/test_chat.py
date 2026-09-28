@@ -266,7 +266,7 @@ async def test_telegram_answer_with_markdown_fallback(tmp_path):
     bot._owner = 111
 
     class FakeSession:
-        async def send(self, message: str) -> ChatReply:
+        async def send(self, message: str, *, approval_cb=None) -> ChatReply:
             await asyncio.sleep(0)  # a real run yields to the loop (LLM call)
             return ChatReply(
                 answer=f"**bold** answer to *{message}* with `code`",
@@ -280,6 +280,10 @@ async def test_telegram_answer_with_markdown_fallback(tmp_path):
 
     bot._sessions[111] = FakeSession()  # type: ignore[assignment]
     await bot._dispatch(_update(111, "what is new?", 5))
+    # _dispatch spawns the answer as a task (so button presses can arrive
+    # mid-run) — let pending tasks run to completion before asserting
+    for task in [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]:
+        await task
 
     sends = [(m, b) for m, b in calls if m == "sendMessage"]
     assert sends, "no messages sent"
@@ -396,7 +400,7 @@ class FakeWebSession:
     def __init__(self):
         self.sent: list[str] = []
 
-    async def send(self, message: str) -> ChatReply:
+    async def send(self, message: str, *, approval_cb=None) -> ChatReply:
         self.sent.append(message)
         return ChatReply(
             answer=f"echo: {message}",

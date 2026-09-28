@@ -45,4 +45,6 @@ jobs:
           WOYO_PROVIDER: cohere
           WOYO_MODEL: command-a-03-2025
           WOYO_TIMEZONE: Africa/Algiers
+          WOYO_ENABLE_CODE_EXEC: "true" # python_exec + workspace files
+          WOYO_ENABLE_SHELL: "true"     # terminal — every call still needs a button-press approval
         run: python deploy/gha-telegram/run_bot.py

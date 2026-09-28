@@ -92,10 +92,10 @@ def _build_agent(settings: Settings, interaction: RichInteraction | None):
 
     bus = EventBus()
     memory = build_memory_from_settings(settings)
-    registry: ToolRegistry = build_default_registry(
-        settings, bus=bus, interaction=interaction, memory=memory
-    )
     router = ModelRouter(settings, bus=bus)
+    registry: ToolRegistry = build_default_registry(
+        settings, bus=bus, interaction=interaction, memory=memory, router=router
+    )
     from woyo.agent import Agent
 
     agent = Agent(settings, router, registry, bus=bus, memory=memory)

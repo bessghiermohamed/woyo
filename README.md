@@ -36,7 +36,9 @@ Most "AI agents" are chatbots with an agent-themed UI. woyo is a from-scratch ag
 
 **Persistence, tasks & memory — done (v0.4).** A single SQLite store (WAL) backs a **resumable task queue** — the loop checkpoints itself after every step, so a SIGKILL mid-task loses nothing; `woyo tasks run --id N --recover` continues exactly where it died (verified live). **Long-term memory** recalls relevant facts into every prompt and is fully auditable: `woyo memory list|show|delete|prune`. Offline-first embeddings (zero new dependencies), TTLs and caps for data minimization.
 
-Roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) — next up: real code sandbox (Phase 4), browser automation (Phase 5), web UI (Phase 6), integrations (Phase 7).
+**Execution, sub-agents & pressable approvals — done (v0.5).** The agent can now *do*, not just research: **`python_exec`** runs code in a sandbox (isolated interpreter, rlimits, scrubbed env so secrets never leak to child processes, optional `--network none` docker tier) with a **persistent workspace**; **`shell_exec`** is a real terminal, denied twice (config flag **and** per-call approval); **workspace file tools** (`read_file`/`write_file`/`list_dir`) with traversal protection; **`spawn_agent`** delegates subtasks to sub-agents (depth-1 by construction, one shared budget, citations still verified by the parent). In Telegram, approvals are **inline Approve/Deny buttons** — the bot shows the exact command and waits for your press (timeout = deny). Verified live end-to-end on Cohere: file → code → correct arithmetic, and sub-agent research delegation.
+
+Roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) — next up: browser automation (Phase 5), web UI (Phase 6), integrations (Phase 7).
 
 ## Quickstart
 
@@ -110,7 +112,7 @@ woyo is designed to run at $0 for typical use:
 
 </details>
 
-## Built-in tools (v0.2)
+## Built-in tools (v0.5)
 
 | Tool | What it does | Permission |
 |---|---|---|
@@ -123,7 +125,10 @@ woyo is designed to run at $0 for typical use:
 | `now` | Current date/time in your timezone | read-only |
 | `ask_user` | Ask the human a question when blocked | read-only |
 | `finish` | End the task with summary, verification, **citation-checked** sources | control |
-| `python_exec` | Sandboxed Python (disabled by default; dev-grade sandboxing in v0.2 — see SECURITY.md) | sandboxed |
+| `python_exec` | Run Python in the sandbox (isolated interpreter, rlimits, scrubbed env, persistent workspace; docker tier available) — off by default | sandboxed |
+| `shell_exec` | Real terminal in the workspace — needs `WOYO_ENABLE_SHELL=true` **and** per-call approval (inline buttons in chat) | writes_external |
+| `read_file` / `write_file` / `list_dir` | Workspace files with path-traversal protection (v0.5) | read-only / sandboxed |
+| `spawn_agent` | Delegate a subtask to a fresh sub-agent (own plan + budgets, depth-1, shared cost account, citations re-verified by the parent) (v0.5) | read-only |
 
 Adding your own tool takes ~20 lines:
 

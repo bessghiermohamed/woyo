@@ -17,7 +17,8 @@ woyo is an agent that browses the web, reads untrusted content, and (eventually)
 | T2 | **SSRF** — agent fetches internal addresses | `fetch_url` resolves DNS and rejects private/loopback/link-local IPs, only http/https on 80/443, ≤5 re-validated redirects, 2 MB cap, content-type allowlist | DNS-rebinding not yet defeated (no egress proxy in v0.1); Phase 6 adds an egress allowlist/proxy |
 | T3 | **Excessive autonomy / runaway cost** | Hard budgets: steps, tool calls, time, tokens, estimated USD; loop detection (identical repeated calls); approval gates; default-deny when no human | Estimation-based cost limits are approximate for unlisted models |
 | T4 | **Dangerous actions** (writes, deletions, purchases) | `Permission` levels; `writes_external`/`destructive` require explicit approval; **denied by default** when no approval channel | Depends on honest tool classification — integration authors must classify correctly (documented in Tool protocol) |
-| T5 | **Code execution escape** | `python_exec` **disabled by default**; isolated interpreter (`-I`), temp cwd, rlimits (CPU/mem/filesize), timeout, output caps | **Dev-grade only — NOT a security boundary** (no network namespace, no seccomp). Proper container isolation is Phase 4; until then keep it off for untrusted tasks |
+| T5 | **Code execution escape** | `python_exec` off by default; two-tier sandbox since v0.5: `local` = isolated interpreter (`-I`), **scrubbed env** (children never inherit TELEGRAM_BOT_TOKEN / provider keys / runner tokens — tested with planted secrets), POSIX rlimits, timeout kill, output caps, workspace-scoped paths; `docker` = throwaway container per call, `--network none`, memory/cpu caps | `local` is a reliability boundary, NOT a security one (no namespace/seccomp) — use `WOYO_SANDBOX=docker` for untrusted code. `shell_exec` is denied twice (flag AND approval). File tools refuse path traversal (tested) |
+| T9 | **Sub-agent misuse** (v0.5) | `spawn_agent` children: fixed tool include-list (no spawn_agent → no recursion, no approval-gated tools, no ask_user); own budgets; shared router so parent's cost/token gate covers child spend; child citations re-verified by the parent's citation gate | A child cannot press approvals (no human attached) or launder invented sources — verified in tests |
 | T6 | **Secret leakage** | Secrets only via environment; never logged, never in events (args digest-logged, outputs capped); `.env` gitignored; transcripts exclude env | Provider request bodies inherently contain prompts — don't paste secrets into tasks |
 | T7 | **Supply chain** (malicious deps) | Minimal dependency set (8 runtime deps, all mainstream); no agent framework; lockfile + review on upgrade | Standard Python ecosystem risk; pin and review |
 | T8 | **Transcript/memory privacy** | Local-first storage (`~/.woyo`), user-readable formats, no telemetry | Local files are as safe as your user account |
@@ -30,6 +31,14 @@ sandboxed       → runs when explicitly enabled in config
 writes_external → requires user approval per action (when WOYO_REQUIRE_APPROVAL=true, the default)
 destructive     → requires user approval per action (always)
 ```
+
+Since v0.5 the approval channel can be async: the Telegram frontend renders
+inline Approve/Deny buttons and waits (bounded by `WOYO_CHAT_APPROVAL_TIMEOUT_S`,
+timeout = deny). A press only counts from the chat that was asked. On GitHub
+Actions the bot's process env contains live secrets — which is exactly why
+child processes get a constructed minimal environment (see T5): the sandbox
+scrubbing is the layer that keeps `shell_exec` from becoming a secret-exfil
+primitive even after a human approves the command itself.
 
 ## Reporting
 

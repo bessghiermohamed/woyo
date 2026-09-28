@@ -8,6 +8,7 @@ from woyo.config import Settings
 from woyo.events import EventBus
 from woyo.memory.longterm import MemoryStore
 from woyo.tools.base import Tool, ToolRegistry, UserInteraction
+from woyo.tools.builtin.agent_tool import SpawnAgentTool
 from woyo.tools.builtin.core_tools import (
     AskUserTool,
     CalculateTool,
@@ -17,6 +18,12 @@ from woyo.tools.builtin.core_tools import (
 )
 from woyo.tools.builtin.crawl_site import CrawlSiteTool
 from woyo.tools.builtin.fetch_url import FetchURLTool
+from woyo.tools.builtin.sandbox import (
+    ListDirTool,
+    ReadFileTool,
+    ShellExecTool,
+    WriteFileTool,
+)
 from woyo.tools.builtin.web_search import WebSearchTool
 from woyo.tools.http_cache import build_cache_from_settings
 
@@ -29,6 +36,7 @@ def build_default_registry(
     http_client: httpx.AsyncClient | None = None,
     include: list[str] | None = None,
     memory: MemoryStore | None = None,
+    router=None,  # ModelRouter — enables spawn_agent (sub-agents)
 ) -> ToolRegistry:
     """Assemble the standard tool set (see ADR-6: search backends are adapters)."""
     registry = ToolRegistry(bus=bus, cap_chars=settings.tool_output_cap_chars)
@@ -48,7 +56,14 @@ def build_default_registry(
         AskUserTool(interaction),
         FinishTool(),
         PythonExecTool(settings),
+        ShellExecTool(settings),
+        ReadFileTool(settings),
+        WriteFileTool(settings),
+        ListDirTool(settings),
     ]
+    if router is not None:
+        # sub-agents share the caller's router: one budget, one cost account
+        tools.append(SpawnAgentTool(settings, router, bus=bus, memory=memory))
     if memory is not None:
         from woyo.tools.builtin.memory_tools import build_memory_tools
 
@@ -69,4 +84,9 @@ __all__ = [
     "AskUserTool",
     "FinishTool",
     "PythonExecTool",
+    "ShellExecTool",
+    "ReadFileTool",
+    "WriteFileTool",
+    "ListDirTool",
+    "SpawnAgentTool",
 ]
