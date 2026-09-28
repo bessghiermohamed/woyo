@@ -9,9 +9,19 @@ httpx client woyo already ships. Safety properties:
   else is refused. The claim persists in ~/.woyo/telegram_state.json.
 - Replies are chunked to fit Telegram's 4096-char message limit and
   fall back from Markdown to plain text when parsing fails.
-- One in-flight run per chat (lock); message handling runs as tasks so
-  the poller keeps receiving — that is what makes inline Approve/Deny
-  buttons possible while an agent run is waiting on an approval.
+- Messages QUEUE per chat (one in-flight run per chat; the next message
+  waits and a short acknowledgement is sent — nothing is dropped).
+- Message handling runs as tasks so the poller keeps receiving — that is
+  what makes inline Approve/Deny buttons possible while an agent run is
+  waiting on an approval.
+- DURABILITY (v0.7): every fetched update is journaled (persisted in the
+  state file) BEFORE processing and removed only after the reply is sent.
+  If the host dies mid-turn, the next boot drains the journal and the
+  request is answered instead of silently lost — the offset alone would
+  have swallowed it.
+- run_forever accepts a runtime budget / shutdown event so ephemeral
+  hosts (GitHub Actions) can rotate gracefully: stop polling, wait for
+  in-flight turns, notify affected chats, sync state, return.
 - Approval buttons carry an id bound to the chat that was asked; presses
   from any other chat are ignored. No press within the timeout = deny.
 - A global 409 means another instance is polling with the same token
@@ -135,21 +145,62 @@ class TelegramBot:
         # approval id -> (future, chat_id that was asked)
         self._pending: dict[str, tuple[asyncio.Future[bool], int]] = {}
         self._approval_seq = 0
+        # update_id -> raw update, fetched but not yet answered (the journal)
+        self._journal: dict[int, dict] = {}
+        # in-flight answer tasks (drained on graceful shutdown)
+        self._inflight: set[asyncio.Task] = set()
+        self._stopping = False
         self._load_state()
 
     # ------------------------------------------------------------------
-    async def run_forever(self) -> None:
+    async def run_forever(
+        self,
+        *,
+        max_runtime_s: float | None = None,
+        shutdown_event: asyncio.Event | None = None,
+        drain_grace_s: float = 90.0,
+    ) -> None:
+        """Poll until a runtime budget / shutdown signal, then leave gracefully.
+
+        On the way out: stop fetching, wait (bounded) for in-flight turns,
+        tell still-busy chats their request is saved, and return — the host
+        wrapper syncs state and respawns. Journaled-but-unanswered updates
+        stay in the state file and are drained on the next boot.
+        """
+        import time as _time
+
+        started = _time.monotonic()
         me = await self._api("getMe")
         bot_name = me.get("username", "?")
         log.info("logged in as @%s — polling for messages…", bot_name)
         print(f"woyo telegram bot @{bot_name} is up — Ctrl-C to stop")
-        if not self._had_state:
+        if self._had_state:
+            await self._drain_journal()
+        else:
             await self._skip_backlog()
         while True:
+            if shutdown_event is not None and shutdown_event.is_set():
+                log.info("shutdown signal — rotating out")
+                break
+            if max_runtime_s is not None:
+                remaining = max_runtime_s - (_time.monotonic() - started)
+                # never start a long poll that would outlive the budget
+                if remaining < _POLL_TIMEOUT + 10:
+                    log.info(
+                        "runtime budget reached (%.0fs) — rotating out",
+                        max_runtime_s,
+                    )
+                    break
             try:
+                poll_started = _time.monotonic()
                 updates = await self._poll()
                 for update in updates:
                     await self._dispatch(update)
+                if not updates and _time.monotonic() - poll_started < 5.0:
+                    # an empty long-poll should hold ~50s server-side; one
+                    # returning instantly means a broken/proxied API (or a
+                    # test double) — never hot-loop the Bot API
+                    await asyncio.sleep(1.0)
             except asyncio.CancelledError:
                 raise
             except RuntimeError as exc:
@@ -162,6 +213,53 @@ class TelegramBot:
             except Exception as exc:  # noqa: BLE001 — the poller must survive
                 log.error("poll cycle failed: %s", exc)
                 await asyncio.sleep(3)
+        await self._graceful_exit(drain_grace_s)
+
+    async def _graceful_exit(self, grace_s: float) -> None:
+        """Bounded drain of in-flight turns + rotation notice for stragglers."""
+        self._stopping = True
+        deadline = asyncio.get_running_loop().time() + grace_s
+        while self._inflight and asyncio.get_running_loop().time() < deadline:
+            await asyncio.wait(
+                list(self._inflight), timeout=1.0,
+            )
+        stragglers = {task for task in self._inflight if not task.done()}
+        if stragglers:
+            # who is busy BEFORE cancelling (locks release on cancel)
+            busy_chats = {
+                chat_id
+                for chat_id, lock in self._locks.items()
+                if lock.locked()
+            }
+            for task in stragglers:
+                task.cancel()
+            # their journaled updates stay pending: the next host drains them
+            for chat_id in busy_chats:
+                await self._send(
+                    chat_id,
+                    "🔄 I'm switching host runners (routine rotation). Your "
+                    "request is saved and will be picked up automatically in "
+                    "a minute or two — no need to resend it.",
+                )
+        self._save_state()
+
+    async def _drain_journal(self) -> None:
+        """Answer requests that were fetched but left unanswered by a
+        previous (killed) host — the anti-silent-loss path (v0.7)."""
+        if not self._journal:
+            return
+        entries = sorted(self._journal.items())
+        log.info("draining %s journaled update(s) from previous host", len(entries))
+        for _update_id, update in entries:
+            try:
+                await self._dispatch(update)
+            except Exception as exc:  # noqa: BLE001 — one bad entry must not block
+                log.error("journal drain failed for %s: %s", _update_id, exc)
+        # give spawned tasks a moment so the journal empties naturally
+        if self._inflight:
+            await asyncio.wait(
+                list(self._inflight), timeout=5.0
+            )
 
     async def _skip_backlog(self) -> None:
         """Fresh start with no persisted offset: confirm-and-drop pending updates.
@@ -183,10 +281,32 @@ class TelegramBot:
         updates = result if isinstance(result, list) else []
         if updates:
             self._offset = int(updates[-1]["update_id"]) + 1
+            # journal BEFORE any processing: a host killed mid-turn must not
+            # lose the request (the offset alone would swallow it)
+            for update in updates:
+                self._journal_update(update)
             self._save_state()
         return updates
 
     # ------------------------------------------------------------------
+    def _journal_update(self, update: dict) -> None:
+        """Record a fetched update as unanswered (durable via _save_state)."""
+        update_id = update.get("update_id")
+        if update_id is None:
+            return
+        self._journal[int(update_id)] = update
+        # bounded: keep the newest 50
+        if len(self._journal) > 50:
+            for key in sorted(self._journal)[:-50]:
+                self._journal.pop(key, None)
+
+    def _journal_done(self, update_id) -> None:
+        """Mark an update answered; persists immediately."""
+        if update_id is None:
+            return
+        if self._journal.pop(int(update_id), None) is not None:
+            self._save_state()
+
     async def _dispatch(self, update: dict) -> None:
         callback = update.get("callback_query")
         if callback:
@@ -198,35 +318,53 @@ class TelegramBot:
             return
         text = (msg.get("text") or msg.get("caption") or "").strip()
         attachment = attachment_ref(msg)
+        update_id = update.get("update_id")
         if msg.get("sticker") and not text and not attachment:
             if not self._authorized(chat_id):
+                self._journal_done(update_id)
                 return
             await self._send(
                 chat_id, "😅 I can't do much with stickers — send text or a file."
             )
+            self._journal_done(update_id)
             return
         if not text and attachment is None:
             await self._send(
                 chat_id,
                 "🤔 I couldn't read that message type. Text and files work best.",
             )
+            self._journal_done(update_id)
             return
         if not self._authorized(chat_id):
             await self._send(chat_id, "🔒 This bot is private.")
+            self._journal_done(update_id)
             return
         if text.startswith("/") and attachment is None:
             await self._command(chat_id, text)
+            self._journal_done(update_id)
             return
         # Run as a task so the poller keeps receiving updates — this is
         # what lets a button press arrive while the run awaits an approval.
+        # The wrapper un-journals the update once the reply is out.
         if attachment is not None:
-            task = asyncio.create_task(self._answer_attachment(chat_id, msg, text))
+            inner = self._answer_attachment(chat_id, msg, text)
         else:
-            task = asyncio.create_task(self._answer(chat_id, text))
-        task.add_done_callback(self._log_task_crash)
+            inner = self._answer(chat_id, text)
 
-    @staticmethod
-    def _log_task_crash(task: asyncio.Task) -> None:  # pragma: no cover
+        async def _run_and_unjournal() -> None:
+            # Un-journal ONLY on normal completion (a reply went out).
+            # On cancellation (host rotation / kill) the entry STAYS so the
+            # next boot re-processes the request — that is the durability
+            # contract; the rotation notice already told the user.
+            await inner
+            self._journal_done(update_id)
+
+        task = asyncio.create_task(_run_and_unjournal())
+        self._inflight.add(task)
+        task.add_done_callback(self._task_done)
+
+    def _task_done(self, task: asyncio.Task) -> None:
+        self._inflight.discard(task)
         if not task.cancelled() and task.exception():
             log.error("answer task crashed: %s", task.exception())
 
@@ -262,8 +400,14 @@ class TelegramBot:
     async def _answer(self, chat_id: int, text: str) -> None:
         lock = self._locks.setdefault(chat_id, asyncio.Lock())
         if lock.locked():
-            await self._send(chat_id, "⏳ Still working on your last message — one at a time.")
-            return
+            # queue, never drop: the lock is released when the previous
+            # turn finishes, then this one runs
+            await self._send(
+                chat_id,
+                "⏳ Got it — I'm still working on your previous message. "
+                "This one is queued and will run right after (nothing is "
+                "dropped).",
+            )
         async with lock:
             typing = asyncio.create_task(self._typing_loop(chat_id))
             try:
@@ -286,8 +430,12 @@ class TelegramBot:
         """Ingest one attached file, then run the agent over it."""
         lock = self._locks.setdefault(chat_id, asyncio.Lock())
         if lock.locked():
-            await self._send(chat_id, "⏳ Still working on your last message — one at a time.")
-            return
+            await self._send(
+                chat_id,
+                "⏳ Got it — I'm still working on your previous message. "
+                "This one is queued and will run right after (nothing is "
+                "dropped).",
+            )
         async with lock:
             typing = asyncio.create_task(self._typing_loop(chat_id))
             try:
@@ -506,6 +654,11 @@ class TelegramBot:
             self._offset = int(data.get("offset", 0))
             owner = data.get("owner")
             self._owner = int(owner) if owner is not None else None
+            pending = data.get("pending")
+            if isinstance(pending, dict):
+                self._journal = {
+                    int(k): v for k, v in pending.items() if isinstance(v, dict)
+                }
         except (OSError, ValueError, TypeError):
             pass
 
@@ -513,7 +666,11 @@ class TelegramBot:
         try:
             self.state_path.parent.mkdir(parents=True, exist_ok=True)
             self.state_path.write_text(
-                json.dumps({"offset": self._offset, "owner": self._owner}),
+                json.dumps({
+                    "offset": self._offset,
+                    "owner": self._owner,
+                    "pending": {str(k): v for k, v in self._journal.items()},
+                }),
                 encoding="utf-8",
             )
         except OSError:

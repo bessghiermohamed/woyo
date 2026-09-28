@@ -40,6 +40,8 @@ Most "AI agents" are chatbots with an agent-themed UI. woyo is a from-scratch ag
 
 **Files in, files out — done (v0.6).** The chat became a real file channel. **Send the bot anything**: text/code/data files (contents inlined into its reasoning), PDFs (text extracted, page- and time-capped), archives (listed, never auto-extracted — zip bombs stay inert), photos (**vision** via free OpenRouter models, tried in order with an honest text fallback that never pretends to have seen the image), voice notes (optional ASR). Every extracted byte is wrapped as untrusted data. Files persist across runner rotations in a size-capped durable store. **Ask it to create files**: `write_file`/`python_exec` then **`send_file`** — the document lands right in your chat (verified live on Cohere: "create a CSV and send it" → `squares.csv` delivered with a caption in 11 s). The tool has exactly one possible destination: the chat asking for it.
 
+**Documents that render, and a bot that can't lose a request — done (v0.7).** Two production bugs fixed for real. **`create_document`**: markdown-ish content in, a polished PDF out — with the typography stack shipped inside the package (Amiri for Arabic/RTL, DejaVu for Latin/Greek/Cyrillic), Arabic shaped and wrapped right-to-left, mixed-script lines handled, and characters no font covers *dropped and reported* instead of drawn as black squares. **Chat truthfulness**: the prompt now says there is no background execution (no "I'll do it in a moment" promises without tool calls), and every turn carries **LAST TURN FACTS** — recorded ground truth about the previous turn (outcome, tool calls, files actually sent) — so "did you finish?" gets answered from facts, not hallucinated progress. Messages **queue** per chat instead of being dropped. **Durability**: every fetched update is **journaled before processing** and un-journaled only after a reply went out — a host killed mid-turn leaves the entry on disk and the next boot drains it; the bot **self-rotates** under GitHub's job ceiling, dispatches its own successor (near-zero gap), and a */5 watchdog re-launches it if the chain ever breaks.
+
 Roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) — next up: browser automation (Phase 5), web UI (Phase 6), integrations (Phase 7).
 
 ## Quickstart
@@ -114,7 +116,7 @@ woyo is designed to run at $0 for typical use:
 
 </details>
 
-## Built-in tools (v0.6)
+## Built-in tools (v0.7)
 
 | Tool | What it does | Permission |
 |---|---|---|
@@ -130,6 +132,7 @@ woyo is designed to run at $0 for typical use:
 | `python_exec` | Run Python in the sandbox (isolated interpreter, rlimits, scrubbed env, persistent workspace; docker tier available) — off by default | sandboxed |
 | `shell_exec` | Real terminal in the workspace — needs `WOYO_ENABLE_SHELL=true` **and** per-call approval (inline buttons in chat) | writes_external |
 | `read_file` / `write_file` / `list_dir` | Workspace files with path-traversal protection (v0.5) | read-only / sandboxed |
+| `create_document` | Markdown-ish content → polished PDF in the workspace; Arabic/RTL shaped correctly, bundled fonts (Amiri + DejaVu), unsupported chars dropped & reported — never black squares (v0.7) | sandboxed |
 | `spawn_agent` | Delegate a subtask to a fresh sub-agent (own plan + budgets, depth-1, shared cost account, citations re-verified by the parent) (v0.5) | read-only |
 | `send_file` | Deliver a workspace file to the user's chat as a document (v0.6; chat frontends only — destination is fixed to the requesting chat) | sandboxed |
 

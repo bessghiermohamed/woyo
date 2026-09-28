@@ -162,9 +162,9 @@
 <header class="hero" id="top">
   <div class="hero-inner">
     <div class="badges">
-      <span class="badge">v<b>0.6.0</b></span>
+      <span class="badge">v<b>0.7.0</b></span>
       <span class="badge">MIT license</span>
-      <span class="badge">208 tests</span>
+      <span class="badge">240 tests</span>
       <span class="badge">13 model providers</span>
       <span class="badge">runs at $0</span>
     </div>
@@ -212,7 +212,7 @@
 
 <section id="chat">
   <div class="sec-inner">
-    <div class="kicker">new in v0.3 · files in v0.6</div>
+    <div class="kicker">chat since v0.3 · files v0.6 · docs v0.7</div>
     <h2>Talk to your agent — from a phone</h2>
     <p class="sub">The same plan&nbsp;→&nbsp;act&nbsp;→&nbsp;verify core, now behind two frontends that need
     no computer on your side: a Telegram bot and a passcode-protected web chat. Conversations
@@ -352,6 +352,7 @@ WOYO_CHAT_PASSWORD=let-me-in
         <tr><td>shell_exec</td><td><b>Real terminal</b> in the workspace — config flag AND per-call approval (inline buttons in chat)</td><td>writes-external</td></tr>
         <tr><td>read/write/list</td><td><b>Workspace files</b> with path-traversal protection — write CSV, analyze, report</td><td>read/sandboxed</td></tr>
         <tr><td>spawn_agent</td><td><b>Sub-agents</b> — delegate a subtask: own plan + budgets, depth-1, one shared cost account</td><td>read-only</td></tr>
+        <tr><td>create_document</td><td><b>Markdown → polished PDF</b> — Arabic/RTL shaped correctly, bundled fonts, no black squares (v0.7)</td><td>sandboxed</td></tr>
         <tr><td>send_file</td><td><b>Deliver a file</b> to the user's chat — destination fixed to the requesting chat (v0.6)</td><td>sandboxed</td></tr>
       </table>
     </div>
@@ -371,6 +372,7 @@ WOYO_CHAT_PASSWORD=let-me-in
       <div class="phase"><span class="no">v0.4</span><div><b>Persistence, tasks &amp; memory</b><p>Resumable task queue — the loop checkpoints every step, so a SIGKILL loses nothing. Long-term memory with offline-first embeddings, fully auditable: list, search, delete.</p></div><span class="status done">done · v0.4</span></div>
       <div class="phase"><span class="no">v0.5</span><div><b>Execution, sub-agents &amp; pressable approvals</b><p>python_exec with scrubbed env + persistent workspace, approval-gated shell, workspace file tools, spawn_agent sub-agents (depth-1, one budget), Telegram inline Approve/Deny buttons.</p></div><span class="status done">done · v0.5</span></div>
       <div class="phase"><span class="no">v0.6</span><div><b>Files in, files out</b><p>Send the bot documents, PDFs, archives, photos (vision via free models, honest fallback) and voice notes — extracted as untrusted data, persisted across rotations. Ask it to create files: send_file delivers them right in the chat.</p></div><span class="status done">done · v0.6</span></div>
+      <div class="phase"><span class="no">v0.7</span><div><b>Documents that render, requests that can't be lost</b><p>create_document turns markdown into polished PDFs with bundled Arabic/RTL-aware typography — no more black squares. The chat states it has no background execution and injects recorded facts about the last turn, so "did you finish?" is answered from ground truth. Updates are journaled before processing and drained on the next boot; the bot self-rotates and dispatches its own successor.</p></div><span class="status done">done · v0.7</span></div>
       <div class="phase"><span class="no">Phase 5</span><div><b>Browser automation</b><p>Playwright-driven browser tool with action budgets, domain allowlists, approval on the "final click".</p></div><span class="status next">next</span></div>
       <div class="phase"><span class="no">Phase 6</span><div><b>API server + web UI</b><p>FastAPI + SSE streaming the event bus; React UI for tasks, approvals and history. CLI stays first-class.</p></div><span class="status next">planned</span></div>
       <div class="phase"><span class="no">Phase 7</span><div><b>Integrations</b><p>GitHub first (woyo works on woyo), then Gmail / Calendar / Drive / Telegram — each with scoped grants.</p></div><span class="status next">planned</span></div>
@@ -411,7 +413,7 @@ woyo chat</div>
     <a href="https://github.com/bessghiermohamed/woyo/blob/main/docs/SECURITY.md">Security</a>
     <a href="https://github.com/bessghiermohamed/woyo/blob/main/docs/ROADMAP.md">Roadmap</a>
   </div>
-  <div class="made">woyo v0.6.0 · MIT · an open-source agent runtime — built in the open</div>
+  <div class="made">woyo v0.7.0 · MIT · an open-source agent runtime — built in the open</div>
 </footer>
 
 <script>

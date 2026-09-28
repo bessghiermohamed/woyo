@@ -1,0 +1,15 @@
+Font licenses for the fonts bundled in woyo/resources/fonts/
+
+Amiri-Regular.ttf, Amiri-Bold.ttf
+  Copyright 2010-2022 The Amiri Project Authors (https://github.com/aliftype/amiri)
+  Licensed under the SIL Open Font License 1.1
+  (https://openfontlicense.org/open-font-license-official-text/)
+
+DejaVuSans.ttf, DejaVuSans-Bold.ttf, DejaVuSansMono.ttf
+  Copyright 2003-2025 by the DejaVu Project contributors
+  (https://dejavu-fonts.github.io/)
+  Licenses: Bitstream Vera Fonts license (base) + Public Domain / Free
+  license terms covering additions. Redistribution and bundling permitted.
+
+Bundled unmodified so document rendering never depends on host fonts
+(see ADR-14).

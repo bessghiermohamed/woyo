@@ -174,7 +174,9 @@ class PythonExecTool(Tool):
         "Run a Python snippet and get stdout/stderr. Runs isolated "
         "(-I, CPU/memory limits, no secrets in env) with the workspace "
         "directory as cwd — files you write persist across calls; use "
-        "read_file/write_file/list_dir to manage them. print() your results."
+        "read_file/write_file/list_dir to manage them. print() your results. "
+        "For PDFs/documents use the create_document tool instead of writing "
+        "reportlab code here — it shapes Arabic and other scripts correctly."
     )
     permission = Permission.SANDBOXED
     timeout_s = 70.0

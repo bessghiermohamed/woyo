@@ -17,6 +17,7 @@ from woyo.tools.builtin.core_tools import (
     PythonExecTool,
 )
 from woyo.tools.builtin.crawl_site import CrawlSiteTool
+from woyo.tools.builtin.documents import CreateDocumentTool
 from woyo.tools.builtin.fetch_url import FetchURLTool
 from woyo.tools.builtin.file_transfer import FileSender, SendFileTool
 from woyo.tools.builtin.sandbox import (
@@ -62,6 +63,7 @@ def build_default_registry(
         ReadFileTool(settings),
         WriteFileTool(settings),
         ListDirTool(settings),
+        CreateDocumentTool(settings),
     ]
     if router is not None:
         # sub-agents share the caller's router: one budget, one cost account
@@ -93,6 +95,7 @@ __all__ = [
     "ReadFileTool",
     "WriteFileTool",
     "ListDirTool",
+    "CreateDocumentTool",
     "SpawnAgentTool",
     "SendFileTool",
 ]

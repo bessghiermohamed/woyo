@@ -1,0 +1,47 @@
+name: bot watchdog
+
+# Safety net for the self-rotating telegram bot (v0.7). The bot normally
+# dispatches its own successor before exiting (run_bot.py); cron only fires
+# a new run when the concurrency group is free, which is exactly when the
+# chain has broken. This watchdog closes the remaining window: every 5
+# minutes, if NO "telegram bot" run is in progress or queued, dispatch one.
+#
+# Uses BOT_STATE_TOKEN (a PAT) because workflow_dispatch triggered by the
+# default GITHUB_TOKEN would not start a run (recursion prevention).
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Keep the bot alive
+        env:
+          GH_TOKEN: ${{ secrets.BOT_STATE_TOKEN }}
+          REPO: ${{ github.repository }}
+          HAS_BOT: ${{ secrets.TELEGRAM_BOT_TOKEN != '' }}
+        run: |
+          if [ "$HAS_BOT" != "true" ]; then
+            echo "::notice::TELEGRAM_BOT_TOKEN is not set — nothing to keep alive."
+            exit 0
+          fi
+          if ! gh auth status >/dev/null 2>&1; then
+            echo "::notice::BOT_STATE_TOKEN is missing or invalid — watchdog disabled."
+            exit 0
+          fi
+          active=$(gh run list --repo "$REPO" --workflow "telegram bot" --status in_progress --json databaseId --jq 'length' 2>/dev/null || echo 0)
+          queued=$(gh run list --repo "$REPO" --workflow "telegram bot" --status queued --json databaseId --jq 'length' 2>/dev/null || echo 0)
+          echo "telegram-bot runs: in_progress=$active queued=$queued"
+          total=$((active + queued))
+          if [ "$total" -eq 0 ]; then
+            echo "no bot run active or queued — dispatching one"
+            if gh workflow run "telegram bot" --repo "$REPO"; then
+              echo "dispatched"
+            else
+              echo "::warning::dispatch failed — will retry on the next tick"
+            fi
+          fi

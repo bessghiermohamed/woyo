@@ -19,7 +19,7 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -138,12 +138,24 @@ class ChatSession:
         self.total_cost_usd = 0.0
         self._day = ""
         self._day_count = 0
+        #: ground truth about the previous turn (kills "still working" hallucinations)
+        self.last_turn: dict | None = None
+        self._sent_files: list[str] = []  # files delivered during the current turn
         self._load()
         self._roll_day()
 
     def _sender_aware_factory(self):
-        """Default factory + the chat's file sender (enables send_file)."""
+        """Default factory + the chat's file sender (enables send_file).
+
+        The sender is wrapped so files delivered during a turn are recorded
+        in `last_turn` — the ground truth the next turn's prompt includes.
+        """
         sender = self.file_sender
+        session = self
+
+        async def recording_sender(path: Path, caption: str) -> None:
+            await sender(path, caption)
+            session._sent_files.append(Path(path).name)
 
         def factory(settings: Settings, bus: EventBus) -> Agent:
             from woyo.memory.longterm import build_memory_from_settings
@@ -151,7 +163,8 @@ class ChatSession:
             memory = build_memory_from_settings(settings)
             router = ModelRouter(settings, bus=bus)
             registry = build_default_registry(
-                settings, bus=bus, memory=memory, router=router, file_sender=sender
+                settings, bus=bus, memory=memory, router=router,
+                file_sender=recording_sender,
             )
             return Agent(settings, router, registry, bus=bus, memory=memory)
 
@@ -179,6 +192,7 @@ class ChatSession:
                 "daily message limit reached "
                 f"({self.settings.chat_daily_messages}); the counter resets tomorrow"
             )
+        self._sent_files = []
 
         bus = EventBus()
         agent = self._agent_factory(self.settings, bus)
@@ -193,6 +207,14 @@ class ChatSession:
         self.total_messages += 1
         self.total_cost_usd += result.usage.cost_usd_est
         self._day_count += 1
+        self.last_turn = {
+            "ts": datetime.now(UTC).isoformat(),
+            "outcome": result.outcome,
+            "tool_calls": result.usage.tool_calls,
+            "duration_s": round(result.duration_s, 1),
+            "files_sent": list(self._sent_files),
+            "reply_preview": (result.final_answer or "")[:200],
+        }
         self._save()
         return ChatReply(
             answer=result.final_answer,
@@ -225,25 +247,71 @@ class ChatSession:
     def _frame_task(self, message: str) -> str:
         preamble = (
             "You are woyo, a capable AI agent, chatting with the user. "
-            "Reply to the newest message. Use your tools when they genuinely help "
-            "(search, fetch pages, calculate); skip them for small talk. "
-            "Keep replies compact, conversational and in the user's language."
+            "Reply to the newest message. Use your tools when they genuinely "
+            "help (search, fetch pages, calculate, create documents); skip "
+            "them for small talk. Keep replies compact, conversational and "
+            "in the user's language.\n"
+            "CRITICAL — NO BACKGROUND EXECUTION: nothing runs after you "
+            "reply; the conversation simply waits for the user's next "
+            "message. So NEVER promise to do something later ('I'll send it "
+            "in a moment', 'I'm still working on it') unless you are doing "
+            "it RIGHT NOW with tool calls in this turn. Either do the work "
+            "now, or explain exactly what you need to proceed. When the user "
+            "asks whether something finished, answer from the LAST TURN "
+            "FACTS below (ground truth), never from promises in earlier "
+            "replies — admit plainly if nothing actually ran."
         )
         if self.file_sender is not None:
             preamble += (
-                " You can deliver files: create them in the workspace with "
+                " You can deliver files: create them with create_document "
+                "(PDFs — it shapes Arabic/RTL and other scripts correctly), "
                 "write_file or python_exec, then call send_file with the "
-                "workspace-relative path."
+                "workspace-relative path. Send the file BEFORE your final "
+                "text reply, in the same turn."
             )
         turns = self.history[-self.settings.chat_history_turns :]
+        facts = self._last_turn_facts()
         if not turns:
-            return f"{preamble}\n\nUSER MESSAGE:\n{message}"
+            body = f"{preamble}\n\n{facts}\n\nUSER MESSAGE:\n{message}" if facts else (
+                f"{preamble}\n\nUSER MESSAGE:\n{message}"
+            )
+            return body
         transcript = "\n".join(
             f"{'User' if role == 'user' else 'woyo'}: {text[:2000]}" for role, text in turns
         )
+        middle = f"\n\n{facts}\n" if facts else ""
         return (
-            f"{preamble}\n\nTRANSCRIPT (oldest first):\n{transcript}\n\n"
-            f"NEW MESSAGE:\n{message}"
+            f"{preamble}\n\nTRANSCRIPT (oldest first):\n{transcript}\n"
+            f"{middle}\nNEW MESSAGE:\n{message}"
+        )
+
+    def _last_turn_facts(self) -> str:
+        """Ground truth about the previous turn — injected into every task."""
+        lt = self.last_turn
+        if not lt:
+            return ""
+        try:
+            ts = datetime.fromisoformat(lt["ts"])
+            age_min = max(0.0, (datetime.now(UTC) - ts).total_seconds() / 60)
+        except (KeyError, ValueError, TypeError):
+            age_min = 0.0
+        age = (
+            f"{age_min:.0f} min" if age_min >= 1 else f"{age_min * 60:.0f}s"
+        )
+        files = lt.get("files_sent") or []
+        files_txt = ", ".join(files) if files else "none"
+        preview = str(lt.get("reply_preview", "")).replace("\n", " ")[:120]
+        return (
+            f"LAST TURN FACTS (ground truth — no work is running right now, "
+            f"nothing happens between messages):\n"
+            f"- {age} ago your previous turn ended: "
+            f"outcome={lt.get('outcome', '?')}, "
+            f"{lt.get('tool_calls', 0)} tool call(s), "
+            f"files sent: {files_txt}.\n"
+            f"- its reply began: \"{preview}\"\n"
+            f"- If the user asks 'did you finish?': judge ONLY by these "
+            f"facts. If you promised something and these facts show it "
+            f"didn't happen, apologize briefly and DO IT NOW with tools."
         )
 
     # ------------------------------------------------------------------
@@ -266,6 +334,8 @@ class ChatSession:
         self.total_cost_usd = float(data.get("total_cost_usd", 0.0))
         self._day = str(data.get("day", ""))
         self._day_count = int(data.get("day_count", 0))
+        lt = data.get("last_turn")
+        self.last_turn = lt if isinstance(lt, dict) else None
 
     def _save(self) -> None:
         try:
@@ -280,6 +350,7 @@ class ChatSession:
                         "total_cost_usd": self.total_cost_usd,
                         "day": self._day,
                         "day_count": self._day_count,
+                        "last_turn": self.last_turn,
                         "saved_at": datetime.now(ZoneInfo("UTC")).isoformat(),
                     }
                 ),
