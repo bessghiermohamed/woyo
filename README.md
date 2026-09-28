@@ -34,7 +34,9 @@ Most "AI agents" are chatbots with an agent-themed UI. woyo is a from-scratch ag
 
 **Chat frontends — done (v0.3).** Talk to woyo from your phone: a **Telegram bot** and a **mobile-first web chat**, both served by the same agent core (transcript memory, per-message budgets, citation-checked answers). Runs anywhere Python runs — including a free Hugging Face Space.
 
-Roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) — next up: persistent tasks & memory (Phase 3), real code sandbox (Phase 4), browser automation (Phase 5), web UI (Phase 6).
+**Persistence, tasks & memory — done (v0.4).** A single SQLite store (WAL) backs a **resumable task queue** — the loop checkpoints itself after every step, so a SIGKILL mid-task loses nothing; `woyo tasks run --id N --recover` continues exactly where it died (verified live). **Long-term memory** recalls relevant facts into every prompt and is fully auditable: `woyo memory list|show|delete|prune`. Offline-first embeddings (zero new dependencies), TTLs and caps for data minimization.
+
+Roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) — next up: real code sandbox (Phase 4), browser automation (Phase 5), web UI (Phase 6), integrations (Phase 7).
 
 ## Quickstart
 
@@ -115,6 +117,8 @@ woyo is designed to run at $0 for typical use:
 | `web_search` | Web search via Tavily / Brave / DuckDuckGo (auto-detected, results cached 1h) | read-only |
 | `fetch_url` | Fetch a page, extract main content (SSRF-hardened, cached 24h) | read-only |
 | `crawl_site` | Bounded same-origin crawl: several pages from one site in one call | read-only |
+| `memory_save` | Store a durable fact/preference/note for future sessions (v0.4) | read-only (local) |
+| `memory_search` | Semantic search over long-term memory (v0.4) | read-only |
 | `calculate` | Safe math expressions | read-only |
 | `now` | Current date/time in your timezone | read-only |
 | `ask_user` | Ask the human a question when blocked | read-only |
@@ -140,6 +144,41 @@ class WeatherTool(Tool):
 ```
 
 Register it, and the agent can use it on the next task. No core changes.
+
+## Tasks that survive restarts + memory you can audit (v0.4)
+
+Long tasks are queue-backed and **resumable**: the agent checkpoints its whole
+loop state (conversation, budgets spent, elapsed time) after every step into
+SQLite. Kill the process mid-run — the next `woyo tasks run --id N --recover`
+picks up exactly where it died, budget accounting included.
+
+```bash
+woyo tasks add "Research X and cite official sources"   # queue it
+woyo tasks run --id 1 --yes                               # run it (live event view)
+woyo tasks pause 1        # ask a running task to pause (checkpointed)
+woyo tasks cancel 1       # or cancel it
+woyo tasks retry 1        # re-queue a finished task from scratch
+woyo tasks list           # pending / running / waiting_approval / paused / ...
+```
+
+Long-term memory works across sessions and processes. Relevant memories are
+auto-recalled into each run's prompt (framed as untrusted hints, never as
+sources), and the agent can store what it learns with `memory_save`.
+Everything is yours to audit — an assistant that remembers things you can't
+see or delete is a liability:
+
+```bash
+woyo memory list                        # what do you know about me?
+woyo memory search "python release"     # semantic search
+woyo memory show 3                      # full record: source, expiry, accesses
+woyo memory delete 3                    # your data, your call
+woyo memory prune                       # purge expired (data minimization)
+```
+
+Memories default to a 180-day TTL and a 5,000-item LRU cap. Embeddings are
+offline-first (deterministic hashing, zero dependencies); providers with an
+OpenAI-compatible `/embeddings` route upgrade automatically. See ADR-11 in
+[docs/DECISIONS.md](docs/DECISIONS.md).
 
 ## Architecture (short version)
 

@@ -33,6 +33,10 @@ app = typer.Typer(
     no_args_is_help=True,
     add_completion=False,
 )
+memory_app = typer.Typer(help="Long-term memory: list, search, add, delete.", no_args_is_help=True)
+tasks_app = typer.Typer(help="Persistent task queue: run, resume, cancel.", no_args_is_help=True)
+app.add_typer(memory_app, name="memory")
+app.add_typer(tasks_app, name="tasks")
 console = Console()
 
 
@@ -84,14 +88,17 @@ class LivePrinter:
 
 
 def _build_agent(settings: Settings, interaction: RichInteraction | None):
+    from woyo.memory.longterm import build_memory_from_settings
+
     bus = EventBus()
+    memory = build_memory_from_settings(settings)
     registry: ToolRegistry = build_default_registry(
-        settings, bus=bus, interaction=interaction
+        settings, bus=bus, interaction=interaction, memory=memory
     )
     router = ModelRouter(settings, bus=bus)
     from woyo.agent import Agent
 
-    agent = Agent(settings, router, registry, bus=bus)
+    agent = Agent(settings, router, registry, bus=bus, memory=memory)
     return agent, bus
 
 
@@ -353,6 +360,41 @@ def doctor():
     else:
         checks.append(("cache", False, "disabled (WOYO_CACHE_ENABLED=false)"))
 
+    if settings.memory_enabled:
+        try:
+            from woyo.memory.longterm import build_memory_from_settings
+
+            memory = build_memory_from_settings(settings)
+            stats = memory.stats() if memory else {}
+            memory.close() if memory else None
+            checks.append(
+                (
+                    "memory",
+                    True,
+                    f"{stats.get('total', 0)} items, embedder {stats.get('embedder')}, "
+                    f"recall top-{settings.memory_recall_k} "
+                    f"(cap {settings.memory_max_items})",
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — diagnostics must not crash
+            checks.append(("memory", False, f"enabled but unusable: {exc}"))
+    else:
+        checks.append(("memory", False, "disabled (WOYO_MEMORY_ENABLED=false)"))
+
+    try:
+        from woyo.store.db import db_path_from_settings
+        from woyo.store.tasks import TaskStore
+
+        task_store = TaskStore(db_path_from_settings(settings))
+        counts: dict[str, int] = {}
+        for t in task_store.list(limit=1000):
+            counts[t.status] = counts.get(t.status, 0) + 1
+        task_store.close()
+        summary = ", ".join(f"{n} {s}" for s, n in sorted(counts.items())) or "empty"
+        checks.append(("tasks", True, f"{summary} ({settings.db_path})"))
+    except Exception as exc:  # noqa: BLE001 — diagnostics must not crash
+        checks.append(("tasks", False, f"unusable: {exc}"))
+
     checks.append(
         (
             "code exec",
@@ -370,6 +412,315 @@ def doctor():
     for name, ok, detail in checks:
         table.add_row(name, "[green]ok[/green]" if ok else "[yellow]!![/yellow]", escape(detail))
     console.print(table)
+
+
+# =====================================================================
+# woyo memory — long-term memory management (Phase 3)
+# =====================================================================
+
+def _memory_store():
+    from woyo.memory.longterm import MemoryStore, build_embedder
+    from woyo.store.db import db_path_from_settings
+
+    settings = Settings()
+    if not settings.memory_enabled:
+        console.print("[yellow]memory is disabled (WOYO_MEMORY_ENABLED=false)[/yellow]")
+        raise typer.Exit(1)
+    return MemoryStore(
+        db_path_from_settings(settings),
+        embedder=build_embedder(settings),
+        max_items=settings.memory_max_items,
+        default_ttl_days=settings.memory_default_ttl_days,
+        min_similarity=settings.memory_min_similarity,
+    )
+
+
+@memory_app.command("list")
+def memory_list(
+    kind: str = typer.Option(None, help="Filter: fact | preference | note"),
+    limit: int = typer.Option(20, help="Rows to show"),
+    all_items: bool = typer.Option(False, "--all", help="Include expired"),
+):
+    """List stored memories (newest first)."""
+    store = _memory_store()
+    rows = store.list(kind=kind, limit=limit, include_expired=all_items)
+    if not rows:
+        console.print("[dim]no memories stored yet[/dim]")
+        return
+    table = Table(title=f"woyo memory — {len(rows)} shown")
+    table.add_column("id", justify="right")
+    table.add_column("kind")
+    table.add_column("content")
+    table.add_column("accesses", justify="right")
+    table.add_column("expires")
+    for r in rows:
+        content = r["content"] if len(r["content"]) <= 90 else r["content"][:87] + "..."
+        table.add_row(
+            str(r["id"]), r["kind"], escape(content), str(r["access_count"]),
+            r["expires_at"] or "never",
+        )
+    console.print(table)
+
+
+@memory_app.command("add")
+def memory_add(
+    content: str = typer.Argument(..., help="The fact/note to remember"),
+    kind: str = typer.Option("note", help="fact | preference | note"),
+    ttl_days: int = typer.Option(None, help="Days until expiry (default from settings)"),
+):
+    """Store a memory directly."""
+    store = _memory_store()
+    memory_id = asyncio.run(store.remember(content, kind=kind, source="cli",
+                                            ttl_days=ttl_days))
+    console.print(f"[green]saved[/green] memory id={memory_id} (kind={kind})")
+
+
+@memory_app.command("search")
+def memory_search(
+    query: str = typer.Argument(..., help="What to look for"),
+    k: int = typer.Option(5, help="Maximum hits"),
+):
+    """Semantic search over stored memories."""
+    store = _memory_store()
+    hits = asyncio.run(store.recall(query, k=k))
+    if not hits:
+        console.print("[dim]no relevant memories[/dim]")
+        return
+    for h in hits:
+        console.print(f"[cyan]#{h.id}[/cyan] ({h.kind}, sim {h.similarity:.2f}) {h.content}")
+
+
+@memory_app.command("show")
+def memory_show(memory_id: int = typer.Argument(..., help="Memory id")):
+    """Show one memory in full."""
+    store = _memory_store()
+    row = store.get(memory_id)
+    if not row:
+        console.print(f"[red]no memory with id={memory_id}[/red]")
+        raise typer.Exit(1)
+    console.print_json(json.dumps(row, default=str))
+
+
+@memory_app.command("delete")
+def memory_delete(
+    memory_id: int = typer.Argument(..., help="Memory id"),
+    yes: bool = typer.Option(False, "--yes", help="Skip confirmation"),
+):
+    """Delete a memory (your data, your call)."""
+    store = _memory_store()
+    row = store.get(memory_id)
+    if not row:
+        console.print(f"[red]no memory with id={memory_id}[/red]")
+        raise typer.Exit(1)
+    if not yes and not Confirm.ask(f"Delete memory #{memory_id}: {row['content'][:80]}?", default=False):
+        return
+    if store.delete(memory_id):
+        console.print(f"[green]deleted[/green] memory #{memory_id}")
+
+
+@memory_app.command("prune")
+def memory_prune(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would go"),
+):
+    """Delete expired memories (data minimization)."""
+    store = _memory_store()
+    if dry_run:
+        rows = store.list(limit=10_000, include_expired=True)
+        n = sum(1 for r in rows if r["expires_at"] and r["expires_at"] <= _utc_now())
+        console.print(f"[dim]{n} expired memor{'y' if n == 1 else 'ies'} would be deleted[/dim]")
+        return
+    n = store.purge_expired()
+    console.print(f"[green]pruned[/green] {n} expired memor{'y' if n == 1 else 'ies'}")
+
+
+@memory_app.command("stats")
+def memory_stats():
+    """Memory size, kinds, embedder, cap."""
+    store = _memory_store()
+    console.print_json(json.dumps(store.stats(), default=str))
+
+
+def _utc_now() -> str:
+    from datetime import UTC, datetime
+
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+# =====================================================================
+# woyo tasks — persistent task queue (Phase 3)
+# =====================================================================
+
+def _task_store():
+    from woyo.store.db import db_path_from_settings
+    from woyo.store.tasks import TaskStore
+
+    return TaskStore(db_path_from_settings(Settings()))
+
+
+_STATUS_COLORS = {
+    "pending": "white", "running": "cyan", "waiting_approval": "yellow",
+    "paused": "magenta", "completed": "green", "failed": "red", "cancelled": "dim",
+}
+
+
+@tasks_app.command("list")
+def tasks_list(
+    status: str = typer.Option(None, help="Filter by status"),
+    limit: int = typer.Option(20, help="Rows to show"),
+):
+    """List tasks (newest first)."""
+    store = _task_store()
+    if status:
+        store.recover_stale(Settings().task_stale_minutes)
+    rows = store.list(status=status, limit=limit)
+    if not rows:
+        console.print("[dim]no tasks[/dim]")
+        return
+    table = Table(title=f"woyo tasks — {len(rows)} shown")
+    table.add_column("id", justify="right")
+    table.add_column("status")
+    table.add_column("attempts", justify="right")
+    table.add_column("title")
+    table.add_column("updated")
+    for t in rows:
+        color = _STATUS_COLORS.get(t.status, "white")
+        table.add_row(
+            str(t.id), f"[{color}]{t.status}[/{color}]", str(t.attempts),
+            escape(t.title[:70]), t.updated_at[:16],
+        )
+    console.print(table)
+
+
+@tasks_app.command("add")
+def tasks_add(
+    task: str = typer.Argument(..., help="The goal for the agent"),
+    run_now: bool = typer.Option(False, "--run", help="Run immediately after queuing"),
+):
+    """Queue a task (picked up by `woyo tasks run`)."""
+    store = _task_store()
+    t = store.create(task, source="cli")
+    console.print(f"[green]queued[/green] task #{t.id}: {t.title[:80]}")
+    if run_now:
+        _run_one(t.id, auto_approve=False)
+
+
+@tasks_app.command("run")
+def tasks_run(
+    task_id: int = typer.Option(None, "--id", help="Run/resume a specific task"),
+    all_pending: bool = typer.Option(False, "--all", help="Run every pending task"),
+    limit: int = typer.Option(5, help="Max pending tasks per invocation"),
+    recover: bool = typer.Option(False, "--recover", help="Recover a crashed running row"),
+    yes: bool = typer.Option(False, "--yes", help="Auto-approve external actions"),
+):
+    """Run pending tasks (or resume a paused/interrupted one)."""
+    if task_id is not None:
+        if recover:
+            _task_store().set_status(task_id, "paused", error="recovered by user")
+        _run_one(task_id, auto_approve=yes)
+        return
+    store = _task_store()
+    recovered = store.recover_stale(Settings().task_stale_minutes)
+    for task_id in recovered:
+        console.print(f"[magenta]recovered interrupted task #{task_id} (paused)[/magenta]")
+    if not all_pending:
+        pending = store.list(status="pending", limit=1)
+        if not pending:
+            console.print("[dim]no pending tasks — `woyo tasks add \"...\"` to queue one[/dim]")
+            return
+        _run_one(pending[0].id, auto_approve=yes)
+        return
+    from woyo.agent.runner import TaskRunner
+
+    runner = TaskRunner(Settings(), store, event_sink=_live_line)
+    results = asyncio.run(runner.run_pending(limit=limit, approval_cb=_auto_or_prompt(yes)))
+    console.print(f"[dim]{len(results)} task(s) processed[/dim]")
+
+
+def _auto_or_prompt(auto: bool):
+    if auto:
+        return lambda tool_name, args_json: (
+            console.print(f"[yellow]auto-approved:[/yellow] {tool_name}") or True
+        )
+    return _approval_prompt
+
+
+def _live_line(line: str) -> None:
+    console.print(Text(line[:160], style="dim"))
+
+
+def _run_one(task_id: int, *, auto_approve: bool) -> None:
+    from woyo.agent.runner import TaskRunner
+
+    store = _task_store()
+    runner = TaskRunner(Settings(), store, event_sink=_live_line)
+    try:
+        result = asyncio.run(
+            runner.run_task(task_id, approval_cb=_auto_or_prompt(auto_approve))
+        )
+    except ValueError as exc:
+        console.print(f"[red]error:[/red] {exc}")
+        raise typer.Exit(1) from exc
+    console.print()
+    console.print(Panel(Markdown(result.final_answer), title=f"task #{task_id}", border_style="green"))
+    console.print(Panel(Text(result.summary()), title="Run report", border_style="dim"))
+
+
+@tasks_app.command("show")
+def tasks_show(
+    task_id: int = typer.Argument(..., help="Task id"),
+    events: bool = typer.Option(False, "--events", help="Include the event log"),
+):
+    """Inspect a task: status, result, checkpoint state."""
+    store = _task_store()
+    t = store.get(task_id)
+    if not t:
+        console.print(f"[red]no task with id={task_id}[/red]")
+        raise typer.Exit(1)
+    body = {
+        "id": t.id, "status": t.status, "attempts": t.attempts,
+        "created": t.created_at, "updated": t.updated_at,
+        "finished": t.finished_at, "error": t.error,
+        "prompt": t.prompt, "result": t.result,
+        "checkpoint_steps": (t.checkpoint or {}).get("steps"),
+    }
+    console.print_json(json.dumps(body, default=str))
+    if events:
+        for e in store.events(task_id, limit=50):
+            console.print(f"[dim]#{e['seq']}[/dim] {e['kind']} {escape(str(e['data'])[:120])}")
+
+
+@tasks_app.command("pause")
+def tasks_pause(task_id: int = typer.Argument(..., help="Task id")):
+    """Ask a running task to pause (checkpointed, resumable)."""
+    _task_store().request_control(task_id, "pause")
+    console.print(f"[magenta]pause requested[/magenta] for task #{task_id}")
+
+
+@tasks_app.command("cancel")
+def tasks_cancel(task_id: int = typer.Argument(..., help="Task id")):
+    """Ask a running task to cancel."""
+    _task_store().request_control(task_id, "cancel")
+    console.print(f"[yellow]cancel requested[/yellow] for task #{task_id}")
+
+
+@tasks_app.command("retry")
+def tasks_retry(task_id: int = typer.Argument(..., help="Task id")):
+    """Re-queue a finished/failed/cancelled task from scratch."""
+    t = _task_store().retry(task_id)
+    if t is None:
+        console.print(f"[red]no task with id={task_id}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]re-queued[/green] task #{t.id} (attempt {t.attempts + 1})")
+
+
+@tasks_app.command("prune")
+def tasks_prune(
+    days: int = typer.Option(30, help="Delete finished tasks older than this"),
+    keep_failed: bool = typer.Option(True, help="Keep failed rows for debugging"),
+):
+    """Delete old finished tasks."""
+    n = _task_store().prune(days=days, keep_failed=keep_failed)
+    console.print(f"[green]pruned[/green] {n} finished task(s)")
 
 
 def main() -> None:

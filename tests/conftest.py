@@ -104,10 +104,16 @@ class SlowTool(Tool):
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Tests must never touch the developer's real ~/.woyo cache."""
+    """Tests must never touch the developer's real ~/.woyo cache or store."""
     import os
+    import tempfile
 
     os.environ.setdefault("WOYO_CACHE_ENABLED", "false")
+    # Phase 3 stores: point the DB at a throwaway file and keep memory off
+    # (memory-specific tests construct their own stores with tmp_path).
+    tmp = tempfile.mkdtemp(prefix="woyo-test-")
+    os.environ.setdefault("WOYO_DB_PATH", os.path.join(tmp, "test.sqlite3"))
+    os.environ.setdefault("WOYO_MEMORY_ENABLED", "false")
 
 
 def make_settings(**kw) -> Settings:

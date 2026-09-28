@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from typing import Any
 
 from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpenAI
@@ -17,6 +18,12 @@ from woyo.errors import AgentError
 from woyo.models.base import Message, ModelResponse, ToolCall, ToolSpec, Usage
 
 _TRANSIENT_STATUS = {408, 409, 429, 500, 502, 503, 504}
+
+#: Some providers emit inline citation markers (e.g. Cohere command models
+#: render "<co: 3>text</co: 3>" pointing at search documents we never see).
+#: They are meaningless outside the provider's own UI — strip them instead
+#: of showing raw markup to chat users.
+_CITATION_MARKUP_RE = re.compile(r"</?co:\s*[\d,\s]+(?::\[[\d,\s]*\])?>|</?citation:\s*\d+>")
 
 
 class OpenAICompatProvider:
@@ -126,8 +133,11 @@ def _from_openai_response(resp: Any, model: str) -> ModelResponse:
     if resp.usage:
         usage.input_tokens = resp.usage.prompt_tokens or 0
         usage.output_tokens = resp.usage.completion_tokens or 0
+    content = msg.content
+    if content:
+        content = _CITATION_MARKUP_RE.sub("", content)
     return ModelResponse(
-        content=msg.content,
+        content=content,
         tool_calls=tool_calls,
         usage=usage,
         finish_reason=choice.finish_reason,

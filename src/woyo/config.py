@@ -115,9 +115,24 @@ class Settings(BaseSettings):
     chat_daily_messages: int = 200  # per chat, per day
     direct_text_replies: bool = False  # chat: accept prose as the final answer
 
+    # --- persistence, tasks & memory (Phase 3, v0.4) ---
+    db_path: str = "~/.woyo/woyo.sqlite3"  # tasks + memories (WAL)
+    task_checkpoint: bool = True  # persist run state each step for resume
+    task_stale_minutes: int = 10  # running rows older than this are recoverable
+    memory_enabled: bool = True
+    memory_embedder: str = "auto"  # auto | hash | openai
+    memory_embed_model: str | None = None  # default depends on provider
+    memory_recall_k: int = 4  # memories injected into a run's prompt
+    memory_min_similarity: float = 0.04  # recall threshold (hash noise floor is ~0.00)
+    memory_max_items: int = 5000  # LRU-ish cap (data minimization)
+    memory_default_ttl_days: int = 180  # 0 = never expire
+
     # --- misc ---
     timezone: str = "UTC"
     sessions_dir: str = "~/.woyo/sessions"
+
+    def db_file(self) -> Path:
+        return Path(self.db_path).expanduser()
 
     # ------------------------------------------------------------------
     def resolved_api_key(self) -> str | None:

@@ -229,3 +229,32 @@ async def test_router_role_models_and_usage():
     assert mock.calls[1]["model"] == "mock/base"
     summary = router.usage_summary()
     assert summary["total"]["calls"] == 2
+
+
+class TestCitationMarkupStripping:
+    def _resp(self, content):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(content=content, tool_calls=None),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+
+    def test_cohere_co_markers_stripped(self):
+        from woyo.models.openai_compat import _from_openai_response
+
+        raw = ("Node.js LTS is v24.21.0</co: 5:[0]>, with EOL "
+               "September 2026</co: 5:[0]> and v22</co: 3>.")
+        out = _from_openai_response(self._resp(raw), "command-a-03-2025")
+        assert "</co" not in out.content
+        assert "Node.js LTS is v24.21.0, with EOL September 2026 and v22." == out.content
+
+    def test_plain_text_untouched(self):
+        from woyo.models.openai_compat import _from_openai_response
+
+        raw = "A plain answer with <b>html tags</b> kept as-is."
+        out = _from_openai_response(self._resp(raw), "gpt-4o-mini")
+        assert out.content == raw

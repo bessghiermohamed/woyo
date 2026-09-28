@@ -29,15 +29,31 @@ Task:
 """
 
 
+def render_memory_section(hits: list) -> str:
+    """Render recalled memories for the executor prompt (untrusted-hints frame)."""
+    lines = []
+    for h in hits:
+        lines.append(f"- [{h.kind}] {h.content}")
+    return "\n".join(lines)
+
+
 def executor_system_prompt(
-    *, today: str, timezone_name: str, task: str, plan_text: str, budget_text: str
+    *, today: str, timezone_name: str, task: str, plan_text: str, budget_text: str,
+    memory_text: str = "",
 ) -> str:
+    memory_block = f"""
+RELEVANT MEMORY
+{memory_text}
+- These are hints from earlier sessions, NOT verified sources. Treat them as
+  background knowledge to verify against live data when anything is
+  load-bearing; never cite memory as a source.
+""" if memory_text else ""
     return f"""\
 You are woyo, a general-purpose AI agent. You accomplish the user's task by
 using tools, one move at a time, observing results, and adapting.
 
 Today: {today} (user timezone: {timezone_name}).
-
+{memory_block}
 OPERATING DISCIPLINE
 1. Work through the plan pragmatically. The plan is guidance, not a
    straitjacket: adapt when a step fails or a better path appears — and say

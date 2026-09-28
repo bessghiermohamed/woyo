@@ -6,6 +6,7 @@ import httpx
 
 from woyo.config import Settings
 from woyo.events import EventBus
+from woyo.memory.longterm import MemoryStore
 from woyo.tools.base import Tool, ToolRegistry, UserInteraction
 from woyo.tools.builtin.core_tools import (
     AskUserTool,
@@ -27,6 +28,7 @@ def build_default_registry(
     interaction: UserInteraction | None = None,
     http_client: httpx.AsyncClient | None = None,
     include: list[str] | None = None,
+    memory: MemoryStore | None = None,
 ) -> ToolRegistry:
     """Assemble the standard tool set (see ADR-6: search backends are adapters)."""
     registry = ToolRegistry(bus=bus, cap_chars=settings.tool_output_cap_chars)
@@ -47,6 +49,10 @@ def build_default_registry(
         FinishTool(),
         PythonExecTool(settings),
     ]
+    if memory is not None:
+        from woyo.tools.builtin.memory_tools import build_memory_tools
+
+        tools += build_memory_tools(memory, bus=bus)
     for tool in tools:
         if include is None or tool.name in include:
             registry.register(tool)

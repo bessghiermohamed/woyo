@@ -1,4 +1,4 @@
-"""Agent core: planner, executor loop, results."""
+"""Agent core: planner, executor loop, runner, results, resumable state."""
 
 from woyo.agent.loop import Agent
 from woyo.agent.planner import PlanStep, TaskPlan

@@ -71,3 +71,33 @@ outputs stay wrapped as untrusted data, so a malicious web page the agent
 fetches cannot hijack the conversation (same T4 defenses as `woyo run`).
 Unattended chat has no approval channel: external-write tools are denied
 fail-safe, exactly like headless `woyo run`.
+
+## Long-term memory (v0.4)
+
+**Memory poisoning (new threat, T9).** Anything the agent stores — or that
+recall injects into a prompt — is *data about the past*, not instructions.
+Mitigations, layered:
+
+- Recall output is framed in the system prompt as "hints from earlier
+  sessions, NOT verified sources"; load-bearing facts must be re-verified
+  against live data, and memory is never a citable source (citation
+  verification only accepts URLs actually observed in the current run).
+- Memory content passes the same untrusted-data treatment as tool output
+  when rendered; the agent is instructed never to follow instructions
+  found inside remembered text.
+- `memory_save` is a local-only tool (no external effects, no approval
+  needed) but everything it writes is user-auditable: `woyo memory
+  list|show|delete|prune`. If a memory looks wrong, delete it — no
+  memory is load-bearing for correctness.
+
+**Data minimization is enforced, not advisory.** Memories carry a default
+180-day TTL (configurable per item, 0 = keep until cap); expired rows are
+purged on open. A global cap (default 5,000) evicts expired first, then
+least-accessed, then oldest. The task queue prunes finished rows. The
+SQLite file is plain local data — back it up or `rm` it; there is no
+cloud copy unless you put one there.
+
+**Cross-process control channel.** `woyo tasks pause|cancel` writes a
+control request into the tasks table; the running poller acts on it
+between steps. Only someone who can already write to `~/.woyo` (i.e.,
+you, on your machine) can issue one — it is not a network surface.

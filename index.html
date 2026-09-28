@@ -162,9 +162,9 @@
 <header class="hero" id="top">
   <div class="hero-inner">
     <div class="badges">
-      <span class="badge">v<b>0.3.2</b></span>
+      <span class="badge">v<b>0.4.0</b></span>
       <span class="badge">MIT license</span>
-      <span class="badge">86 tests</span>
+      <span class="badge">156 tests</span>
       <span class="badge">13 model providers</span>
       <span class="badge">runs at $0</span>
     </div>
@@ -340,6 +340,8 @@ WOYO_CHAT_PASSWORD=let-me-in
         <tr><td>web_search</td><td><b>Web search</b> via Tavily / Brave / DuckDuckGo (auto-detected, results cached)</td><td>read-only</td></tr>
         <tr><td>fetch_url</td><td><b>Fetch a page</b> and extract main content — SSRF-hardened, TTL-cached</td><td>read-only</td></tr>
         <tr><td>crawl_site</td><td><b>Bounded site crawl</b> — same-origin pages, depth- and page-capped</td><td>read-only</td></tr>
+        <tr><td>memory_save</td><td><b>Remember a fact</b> for future sessions — auditable and deletable</td><td>read-only</td></tr>
+        <tr><td>memory_search</td><td><b>Search long-term memory</b> — semantic recall with similarity scores</td><td>read-only</td></tr>
         <tr><td>calculate</td><td><b>Safe math</b> expressions, evaluated exactly</td><td>read-only</td></tr>
         <tr><td>now</td><td><b>Current date/time</b> in your timezone — never guess "today"</td><td>read-only</td></tr>
         <tr><td>ask_user</td><td><b>Ask the human</b> when blocked on a decision only they can make</td><td>read-only</td></tr>
@@ -360,8 +362,8 @@ WOYO_CHAT_PASSWORD=let-me-in
       <div class="phase"><span class="no">Phase 1</span><div><b>Agent core (MVP)</b><p>Loop, planner, tool system, model routing, budgets, injection defenses, CLI, test suite.</p></div><span class="status done">done · v0.1</span></div>
       <div class="phase"><span class="no">Phase 2</span><div><b>Research depth</b><p>Response caching, bounded crawling, citation verification against observed URLs, cross-check prompts, search budgets.</p></div><span class="status done">done · v0.2</span></div>
       <div class="phase"><span class="no">v0.3</span><div><b>Chat frontends</b><p>Telegram bot + mobile web chat, transcript memory that survives restarts, per-message budgets, free HF Space hosting recipe.</p></div><span class="status done">done · v0.3</span></div>
-      <div class="phase"><span class="no">Phase 3</span><div><b>Persistence, tasks &amp; memory</b><p>SQLite store, task state machine, long-term memory with embeddings, memory you can inspect and delete.</p></div><span class="status next">next</span></div>
-      <div class="phase"><span class="no">Phase 4</span><div><b>Real code sandbox</b><p>Container isolation for python_exec, scoped file tools, documented threat model.</p></div><span class="status next">planned</span></div>
+      <div class="phase"><span class="no">v0.4</span><div><b>Persistence, tasks &amp; memory</b><p>Resumable task queue — the loop checkpoints every step, so a SIGKILL loses nothing. Long-term memory with offline-first embeddings, fully auditable: list, search, delete.</p></div><span class="status done">done · v0.4</span></div>
+      <div class="phase"><span class="no">Phase 4</span><div><b>Real code sandbox</b><p>Container isolation for python_exec, scoped file tools, documented threat model.</p></div><span class="status next">next</span></div>
       <div class="phase"><span class="no">Phase 5</span><div><b>Browser automation</b><p>Playwright-driven browser tool with action budgets, domain allowlists, approval on the "final click".</p></div><span class="status next">planned</span></div>
       <div class="phase"><span class="no">Phase 6</span><div><b>API server + web UI</b><p>FastAPI + SSE streaming the event bus; React UI for tasks, approvals and history. CLI stays first-class.</p></div><span class="status next">planned</span></div>
       <div class="phase"><span class="no">Phase 7</span><div><b>Integrations</b><p>GitHub first (woyo works on woyo), then Gmail / Calendar / Drive / Telegram — each with scoped grants.</p></div><span class="status next">planned</span></div>
@@ -402,7 +404,7 @@ woyo chat</div>
     <a href="https://github.com/bessghiermohamed/woyo/blob/main/docs/SECURITY.md">Security</a>
     <a href="https://github.com/bessghiermohamed/woyo/blob/main/docs/ROADMAP.md">Roadmap</a>
   </div>
-  <div class="made">woyo v0.3.2 · MIT · an open-source agent runtime — built in the open</div>
+  <div class="made">woyo v0.4.0 · MIT · an open-source agent runtime — built in the open</div>
 </footer>
 
 <script>

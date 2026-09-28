@@ -97,9 +97,12 @@ AgentFactory = Callable[[Settings, EventBus], Agent]
 
 
 def _default_agent_factory(settings: Settings, bus: EventBus) -> Agent:
-    registry = build_default_registry(settings, bus=bus)
+    from woyo.memory.longterm import build_memory_from_settings
+
+    memory = build_memory_from_settings(settings)
+    registry = build_default_registry(settings, bus=bus, memory=memory)
     router = ModelRouter(settings, bus=bus)
-    return Agent(settings, router, registry, bus=bus)
+    return Agent(settings, router, registry, bus=bus, memory=memory)
 
 
 class ChatSession:

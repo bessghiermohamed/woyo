@@ -36,13 +36,13 @@ The user has no computer — a phone-reachable chat became the priority
 - [x] Free hosting: `deploy/gha-telegram/` — GitHub Actions runner + private-repo state sync (HF Space recipe kept for PRO accounts)
 - [ ] Telegram inline approval buttons (stays in Phase 7 — makes write-tools usable in chat)
 
-## Phase 3 — Persistence, tasks & memory
+## Phase 3 — Persistence, tasks & memory ✅ (v0.4.0)
 
-SQLite store; task state machine (pending/running/waiting_approval/paused/completed/failed/cancelled) with pause/resume/cancel/retry; conversation memory across turns; long-term memory with embeddings (SQLite + sqlite-vec); memory visibility & deletion (CLI `woyo memory` commands); data minimization (expiration, relevance).
+SQLite store; task state machine (pending/running/waiting_approval/paused/completed/failed/cancelled) with pause/resume/cancel/retry; conversation memory across turns; long-term memory with embeddings (SQLite, brute-force KNN now — sqlite-vec past ~10k items, see ADR-11); memory visibility & deletion (CLI `woyo memory` commands); data minimization (expiration, relevance).
 
-- [ ] A task survives process restart and resumes correctly
-- [ ] User can list/inspect/delete every memory item
-- [ ] Memory measurably helps a follow-up task (repeat-question test)
+- [x] A task survives process restart and resumes correctly — *verified live: SIGKILL mid-run (3 steps done, 27.4s elapsed checkpointed), `--recover` resumed from step 3 and completed with verified sources*
+- [x] User can list/inspect/delete every memory item — *`woyo memory list|show|delete|prune|stats`, exercised live*
+- [x] Memory measurably helps a follow-up task (repeat-question test) — *verified live across processes: fact stored via `memory_save`, fresh process answered "what's my cat's name?" with 0 web searches; recall threshold calibrated on measured similarities*
 
 ## Phase 4 — Real code sandbox
 

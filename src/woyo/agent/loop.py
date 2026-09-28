@@ -6,20 +6,23 @@ Design notes (see ARCHITECTURE.md §3):
 - Loop detection on identical repeated calls; replan pressure on failures.
 - Approval gates for writes_external/destructive tools — denied when no
   approval channel exists (fail safe).
+- Phase 3: the loop's whole mutable state lives in RunState and can be
+  checkpointed after every step (resume after restart) and steered between
+  steps by an external control channel (pause / cancel).
 """
 
 from __future__ import annotations
 
 import time
-from collections import Counter
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from woyo.agent.citations import collect_observed_urls, normalize_url, verify_sources
 from woyo.agent.planner import create_plan
-from woyo.agent.prompts import executor_system_prompt
+from woyo.agent.prompts import executor_system_prompt, render_memory_section
 from woyo.agent.results import RunResult, build_usage_report
+from woyo.agent.state import RunState
 from woyo.config import Settings
 from woyo.errors import AgentError, ErrorKind
 from woyo.events import EventBus
@@ -28,7 +31,12 @@ from woyo.models.base import Message, ToolCall, ToolSpec
 from woyo.models.router import ModelRouter
 from woyo.tools.base import Permission, ToolRegistry, ToolResult
 
+if TYPE_CHECKING:
+    from woyo.memory.longterm import MemoryStore
+
 ApprovalCallback = Callable[[str, str], bool]  # (tool_name, args_json) -> approved
+CheckpointCallback = Callable[[dict[str, Any]], None]  # RunState.to_dict() -> stored
+ControlPoll = Callable[[], str | None]  # -> "pause" | "cancel" | None
 
 _SEARCH_TOOLS = {"web_search", "crawl_site"}
 
@@ -42,11 +50,14 @@ class Agent:
         router: ModelRouter,
         registry: ToolRegistry,
         bus: EventBus | None = None,
+        *,
+        memory: MemoryStore | None = None,
     ):
         self.settings = settings
         self.router = router
         self.registry = registry
         self.bus = bus or EventBus()
+        self.memory = memory
 
     # ------------------------------------------------------------------
     async def run(
@@ -54,6 +65,9 @@ class Agent:
         task: str,
         *,
         approval_cb: ApprovalCallback | None = None,
+        resume_state: dict[str, Any] | None = None,
+        checkpoint_cb: CheckpointCallback | None = None,
+        control_poll: ControlPoll | None = None,
     ) -> RunResult:
         task = task.strip()
         if not task:
@@ -61,57 +75,88 @@ class Agent:
         started = time.monotonic()
         self.bus.emit("run_started", task=task[:300])
 
-        # 1) PLAN ------------------------------------------------------
-        catalog = "\n".join(
-            f"- {item['name']} ({item['permission']}): {item['description']}"
-            for item in self.registry.safety_overview()
-        )
-        plan = await create_plan(self.router, task, catalog, self.bus)
-        budget_text = (
-            f"max {self.settings.max_steps} steps, {self.settings.max_tool_calls} tool "
-            f"calls, {self.settings.max_time_s:.0f}s, ~${self.settings.max_cost_usd:.2f}"
-        )
-        system = executor_system_prompt(
-            today=datetime.now(UTC).strftime("%Y-%m-%d"),
-            timezone_name=self.settings.timezone,
-            task=task,
-            plan_text=plan.render(),
-            budget_text=budget_text,
-        )
-        messages: list[Message] = [
-            Message(role="system", content=system),
-            Message(role="user", content=f"Task: {task}"),
-        ]
+        if resume_state is not None:
+            state = RunState.from_dict(resume_state)
+            if state.task.strip() != task:
+                raise AgentError(
+                    "resume state belongs to a different task; retry from scratch"
+                )
+            plan = None
+            self.bus.emit("notice", reason="resuming from checkpoint", steps_done=state.steps)
+        else:
+            # 1) PLAN --------------------------------------------------
+            catalog = "\n".join(
+                f"- {item['name']} ({item['permission']}): {item['description']}"
+                for item in self.registry.safety_overview()
+            )
+            plan = await create_plan(self.router, task, catalog, self.bus)
+            budget_text = (
+                f"max {self.settings.max_steps} steps, {self.settings.max_tool_calls} tool "
+                f"calls, {self.settings.max_time_s:.0f}s, ~${self.settings.max_cost_usd:.2f}"
+            )
+            memory_text = ""
+            if self.memory is not None:
+                try:
+                    hits = await self.memory.recall(task, k=self.settings.memory_recall_k)
+                    memory_text = render_memory_section(hits) if hits else ""
+                except Exception:  # noqa: BLE001 — recall must never block a run
+                    memory_text = ""
+            system = executor_system_prompt(
+                today=datetime.now(UTC).strftime("%Y-%m-%d"),
+                timezone_name=self.settings.timezone,
+                task=task,
+                plan_text=plan.render(),
+                budget_text=budget_text,
+                memory_text=memory_text,
+            )
+            state = RunState(
+                task=task,
+                system_prompt=system,
+                plan_text=plan.render(),
+                messages=[
+                    Message(role="system", content=system),
+                    Message(role="user", content=f"Task: {task}"),
+                ],
+            )
+
+        prior_elapsed = state.elapsed_s
+
+        def elapsed_now() -> float:
+            return prior_elapsed + (time.monotonic() - started)
 
         # 2) EXECUTE LOOP ----------------------------------------------
-        steps = 0
-        tool_calls = 0
-        search_calls = 0
-        consecutive_failures = 0
-        text_only_strikes = 0
-        repeat_counter: Counter[tuple[str, str]] = Counter()
-        observed_urls: set[str] = set()
         outcome = "failed"
         outcome_detail = ""
         final: dict[str, Any] | None = None
 
         while final is None:
+            # --- external control (pause/cancel between steps) --------
+            action = control_poll() if control_poll is not None else None
+            if action == "cancel":
+                outcome, outcome_detail = "cancelled", "cancelled by user"
+                self.bus.emit("limit_hit", limit="cancelled by user")
+                break
+            if action == "pause":
+                outcome, outcome_detail = "paused", "paused by user"
+                self.bus.emit("limit_hit", limit="paused by user")
+                break
+
             # --- budget gate ------------------------------------------
-            budget_reason = self._check_budgets(steps, tool_calls, started)
+            budget_reason = self._check_budgets(state, elapsed_now())
             if budget_reason is not None:
                 outcome, outcome_detail = "budget_exhausted", budget_reason
                 self.bus.emit("limit_hit", limit=budget_reason)
                 break
 
             # --- executor call ----------------------------------------
-            compact_context(messages, self.settings.context_soft_limit_tokens)
-            steps += 1
+            compact_context(state.messages, self.settings.context_soft_limit_tokens)
+            state.steps += 1
             resp = await self.router.complete(
                 "executor",
-                messages=messages,
+                messages=state.messages,
                 tools=self._tool_specs(),
             )
-            messages.append(
+            state.messages.append(
                 Message(
                     role="assistant",
                     content=resp.content,
@@ -122,8 +167,8 @@ class Agent:
             if not resp.tool_calls:
                 # text-only reply: task mode nudges once and accepts the second
                 # as final; chat mode (direct_text_replies) accepts prose directly
-                text_only_strikes += 1
-                if text_only_strikes >= 2 or self.settings.direct_text_replies:
+                state.text_only_strikes += 1
+                if state.text_only_strikes >= 2 or self.settings.direct_text_replies:
                     final = {
                         "summary": resp.content or "(no content)",
                         "verified": False,
@@ -136,7 +181,7 @@ class Agent:
                         "text-only final answer"
                     )
                     break
-                messages.append(
+                state.messages.append(
                     Message(
                         role="user",
                         content=(
@@ -147,13 +192,15 @@ class Agent:
                         ),
                     )
                 )
+                self._checkpoint(state, elapsed_now(), checkpoint_cb)
                 continue
 
-            text_only_strikes = 0
+            state.text_only_strikes = 0
             stop_reason: str | None = None
             for tc in resp.tool_calls:
                 # per-task search budget (Phase 2)
-                if tc.name in _SEARCH_TOOLS and search_calls >= self.settings.max_search_calls:
+                if (tc.name in _SEARCH_TOOLS
+                        and state.search_calls >= self.settings.max_search_calls):
                     self.bus.emit(
                         "limit_hit",
                         limit=f"search budget ({self.settings.max_search_calls} calls)",
@@ -164,7 +211,7 @@ class Agent:
                         "or crawl again — work with the material already in "
                         "your context and finish.",
                     )
-                    messages.append(
+                    state.messages.append(
                         Message(
                             role="tool",
                             tool_call_id=tc.id,
@@ -172,23 +219,23 @@ class Agent:
                             content=self._observation_text(result),
                         )
                     )
-                    tool_calls += 1
+                    state.tool_calls += 1
                     continue
 
                 result, finish_payload, blocked_reason = await self._execute_one(
                     tc,
                     approval_cb=approval_cb,
-                    repeat_counter=repeat_counter,
+                    repeat_counter=state.repeat_counter,
                 )
                 if tc.name in _SEARCH_TOOLS:
-                    search_calls += 1
-                observed_urls.update(
+                    state.search_calls += 1
+                state.observed_urls.update(
                     normalize_url(u)
                     for u in collect_observed_urls(result)
                     if normalize_url(u)
                 )
                 observation = self._observation_text(result)
-                messages.append(
+                state.messages.append(
                     Message(
                         role="tool",
                         tool_call_id=tc.id,
@@ -196,7 +243,7 @@ class Agent:
                         content=observation,
                     )
                 )
-                tool_calls += 1
+                state.tool_calls += 1
                 if finish_payload is not None:
                     final = finish_payload
                     outcome = "completed"
@@ -205,12 +252,16 @@ class Agent:
                     stop_reason = blocked_reason
                     break
                 if result.ok:
-                    consecutive_failures = 0
+                    state.consecutive_failures = 0
                 else:
-                    consecutive_failures += 1
-                    if consecutive_failures >= 4:
+                    state.consecutive_failures += 1
+                    if state.consecutive_failures >= 4:
                         stop_reason = "too many consecutive tool failures"
                         break
+
+            # --- checkpoint after every executor step -----------------
+            self._checkpoint(state, elapsed_now(), checkpoint_cb)
+
             if final is not None:
                 break
             if stop_reason:
@@ -220,20 +271,41 @@ class Agent:
 
         # 3) RESULT -----------------------------------------------------
         if final is None:
-            final = {
-                "summary": (
-                    "The run stopped before completing "
-                    f"({outcome_detail or outcome}). No final answer was produced; "
-                    "the transcript above shows how far it got."
-                ),
-                "verified": False,
-                "open_questions": [task],
-                "sources": [],
-            }
+            if outcome == "paused":
+                final = {
+                    "summary": (
+                        "The run was paused by the user before completing. "
+                        "Progress so far is checkpointed; resume to continue."
+                    ),
+                    "verified": False,
+                    "open_questions": [task],
+                    "sources": [],
+                }
+            elif outcome == "cancelled":
+                final = {
+                    "summary": (
+                        "The run was cancelled by the user. No final answer was "
+                        "produced; the transcript shows how far it got."
+                    ),
+                    "verified": False,
+                    "open_questions": [],
+                    "sources": [],
+                }
+            else:
+                final = {
+                    "summary": (
+                        "The run stopped before completing "
+                        f"({outcome_detail or outcome}). No final answer was produced; "
+                        "the transcript above shows how far it got."
+                    ),
+                    "verified": False,
+                    "open_questions": [task],
+                    "sources": [],
+                }
 
         # citation verification: claimed sources must have been observed
         verified_sources, dropped_sources = verify_sources(
-            final.get("sources"), observed_urls
+            final.get("sources"), state.observed_urls
         )
         if dropped_sources:
             self.bus.emit(
@@ -258,19 +330,32 @@ class Agent:
                 s.get("url", "") for s in dropped_sources if isinstance(s, dict)
             ],
             open_questions=final.get("open_questions") or [],
-            usage=build_usage_report(self.router.usage_summary(), tool_calls),
-            duration_s=time.monotonic() - started,
-            steps=steps,
+            usage=build_usage_report(self.router.usage_summary(), state.tool_calls),
+            duration_s=elapsed_now(),
+            steps=state.steps,
             events_log=[e.to_dict() for e in self.bus.events],
         )
         self.bus.emit(
             "run_finished",
             outcome=outcome,
-            steps=steps,
-            tool_calls=tool_calls,
+            steps=state.steps,
+            tool_calls=state.tool_calls,
             cost_usd=result.usage.cost_usd_est,
         )
         return result
+
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _checkpoint(
+        state: RunState, elapsed: float, cb: CheckpointCallback | None
+    ) -> None:
+        if cb is None:
+            return
+        state.elapsed_s = elapsed
+        try:
+            cb(state.to_dict())
+        except Exception:  # noqa: BLE001 — checkpointing must never kill a run
+            pass
 
     # ------------------------------------------------------------------
     def _tool_specs(self) -> list[ToolSpec]:
@@ -286,13 +371,13 @@ class Agent:
             )
         return specs
 
-    def _check_budgets(self, steps: int, tool_calls: int, started: float) -> str | None:
+    def _check_budgets(self, state: RunState, elapsed_s: float) -> str | None:
         s = self.settings
-        if steps >= s.max_steps:
+        if state.steps >= s.max_steps:
             return f"step limit ({s.max_steps}) reached"
-        if tool_calls >= s.max_tool_calls:
+        if state.tool_calls >= s.max_tool_calls:
             return f"tool-call limit ({s.max_tool_calls}) reached"
-        if time.monotonic() - started > s.max_time_s:
+        if elapsed_s > s.max_time_s:
             return f"time limit ({s.max_time_s:.0f}s) reached"
         tokens = self.router.total_usage.input_tokens + self.router.total_usage.output_tokens
         if tokens >= s.max_tokens:
@@ -314,7 +399,7 @@ class Agent:
         tc: ToolCall,
         *,
         approval_cb: ApprovalCallback | None,
-        repeat_counter: Counter[tuple[str, str]],
+        repeat_counter,
     ) -> tuple[ToolResult, dict[str, Any] | None, str | None]:
         """Run one tool call through the gates.
 
