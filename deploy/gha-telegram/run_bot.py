@@ -1,10 +1,12 @@
 """Run the woyo Telegram bot on a GitHub Actions runner (ephemeral host).
 
-The runner vanishes after ~6h, so conversation + offset state is synced to
-a PRIVATE git repo (BOT_STATE_REPO + BOT_STATE_TOKEN env) after every
-message. On boot the repo is cloned into a temp dir and its *.json files
-are restored into ~/.woyo, so the next runner resumes exactly where this
-one stopped.
+The runner vanishes after ~6h, so ALL durable state is synced to a PRIVATE
+git repo (BOT_STATE_REPO + BOT_STATE_TOKEN env) after every message:
+  * telegram_state.json  — update offset + owner claim
+  * chats/*.json         — conversation transcripts
+  * woyo.sqlite3         — tasks + long-term memory (online-backup snapshot)
+On boot the repo is cloned into a temp dir and restored into ~/.woyo, so
+the next runner resumes exactly where this one stopped — including memory.
 
 Secrets this script expects (repo → Settings → Secrets and variables):
   TELEGRAM_BOT_TOKEN   the bot token from @BotFather
@@ -17,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sqlite3
 import subprocess
 import tempfile
 from pathlib import Path
@@ -24,6 +27,7 @@ from pathlib import Path
 HOME = Path.home() / ".woyo"
 STATE_FILE = HOME / "telegram_state.json"
 CHATS_DIR = HOME / "chats"
+DB_FILE = HOME / "woyo.sqlite3"
 
 STATE_REPO = os.environ.get("BOT_STATE_REPO", "")
 STATE_TOKEN = os.environ.get("BOT_STATE_TOKEN", "")
@@ -48,16 +52,58 @@ def pull_state() -> None:
     _git("config", "user.name", "woyo-bot", cwd=CLONE_DIR)
     _git("config", "user.email", "woyo-bot@users.noreply.github.com", cwd=CLONE_DIR)
     restored = 0
-    for path in CLONE_DIR.rglob("*.json"):
+    for path in CLONE_DIR.rglob("*"):
+        if not path.is_file():
+            continue
         if path.name == "telegram_state.json":
             STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
             STATE_FILE.write_bytes(path.read_bytes())
             restored += 1
-        else:
+        elif path.name == "woyo.sqlite3":
+            # drop stale WAL sidecars so sqlite opens the snapshot clean
+            for suffix in ("-wal", "-shm"):
+                (DB_FILE.parent / f"woyo.sqlite3{suffix}").unlink(missing_ok=True)
+            DB_FILE.parent.mkdir(parents=True, exist_ok=True)
+            DB_FILE.write_bytes(path.read_bytes())
+            restored += 1
+        elif path.suffix == ".json":
             CHATS_DIR.mkdir(parents=True, exist_ok=True)
             (CHATS_DIR / path.name).write_bytes(path.read_bytes())
             restored += 1
     print(f"state restored: {restored} file(s) from {STATE_REPO}")
+
+
+def snapshot_db(dest: Path) -> None:
+    """Online-backup the live db to dest (safe while idle; no WAL sidecars)."""
+    if not DB_FILE.exists():
+        return
+    src = sqlite3.connect(str(DB_FILE))
+    dst = sqlite3.connect(str(dest))
+    try:
+        with dst:
+            src.backup(dst)
+    finally:
+        src.close()
+        dst.close()
+
+
+def _push_db() -> None:
+    """Snapshot tasks+memory db into the state clone and push if it changed."""
+    if CLONE_DIR is None:
+        return
+    try:
+        snapshot_db(CLONE_DIR / DB_FILE.name)
+        _git("add", DB_FILE.name, cwd=CLONE_DIR)
+        staged = subprocess.run(
+            ["git", "diff", "--cached", "--quiet"], cwd=CLONE_DIR,
+            capture_output=True,
+        )
+        if staged.returncode == 0:
+            return  # db unchanged since the last sync
+        _git("commit", "-m", "sync woyo.sqlite3", cwd=CLONE_DIR)
+        _git("push", cwd=CLONE_DIR)
+    except (subprocess.CalledProcessError, sqlite3.Error) as exc:
+        print(f"warn: state sync of {DB_FILE.name} failed: {exc}")
 
 
 def _push_file(name: str, path: Path) -> None:
@@ -113,6 +159,7 @@ def main() -> None:
                 def save() -> None:
                     orig_save()
                     _push_file(sess._state_path().name, sess._state_path())
+                    _push_db()  # tasks + long-term memory ride along
 
                 sess._save = save  # type: ignore[method-assign]
             return sess
