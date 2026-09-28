@@ -33,7 +33,7 @@ jobs:
 
       - name: Install woyo
         if: steps.gate.outputs.has_token == 'true'
-        run: pip install "woyo[search,extract] @ git+https://github.com/bessghiermohamed/woyo.git@v0.3.2"
+        run: pip install ".[search,extract]" # from this checkout — the bot always runs the code it ships with
 
       - name: Run the bot (state synced to a private repo)
         if: steps.gate.outputs.has_token == 'true'
