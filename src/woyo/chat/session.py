@@ -30,6 +30,7 @@ from woyo.events import EventBus
 from woyo.memory.session import SessionStore
 from woyo.models.router import ModelRouter
 from woyo.tools.builtin import build_default_registry
+from woyo.tools.builtin.file_transfer import FileSender
 
 #: Tighter budget profile for interactive chat (applies per message).
 CHAT_PROFILE: dict[str, object] = {
@@ -118,13 +119,18 @@ class ChatSession:
         store: SessionStore | None = None,
         chats_dir: str | Path = "~/.woyo/chats",
         agent_factory: AgentFactory | None = None,
+        file_sender: FileSender | None = None,
     ):
         self.key = key
         self.base_settings = settings
         self.settings = chat_settings(settings)
         self.store = store or SessionStore(settings.sessions_path())
         self.chats_dir = Path(chats_dir).expanduser()
-        self._agent_factory = agent_factory or _default_agent_factory
+        self.file_sender = file_sender
+        if agent_factory is None and file_sender is not None:
+            self._agent_factory = self._sender_aware_factory()
+        else:
+            self._agent_factory = agent_factory or _default_agent_factory
 
         self.history: list[tuple[str, str]] = []
         self.session_id = self.store.new_session_id()
@@ -135,14 +141,35 @@ class ChatSession:
         self._load()
         self._roll_day()
 
+    def _sender_aware_factory(self):
+        """Default factory + the chat's file sender (enables send_file)."""
+        sender = self.file_sender
+
+        def factory(settings: Settings, bus: EventBus) -> Agent:
+            from woyo.memory.longterm import build_memory_from_settings
+
+            memory = build_memory_from_settings(settings)
+            router = ModelRouter(settings, bus=bus)
+            registry = build_default_registry(
+                settings, bus=bus, memory=memory, router=router, file_sender=sender
+            )
+            return Agent(settings, router, registry, bus=bus, memory=memory)
+
+        return factory
+
     # ------------------------------------------------------------------
-    async def send(self, message: str, *, approval_cb=None) -> ChatReply:
+    async def send(
+        self, message: str, *, approval_cb=None, images: list[str] | None = None
+    ) -> ChatReply:
         """Process one user message through a fresh agent run.
 
         `approval_cb` (optional, sync or async) is offered to the agent for
         tools that act externally — e.g. the Telegram frontend shows inline
         Approve/Deny buttons and waits for the press. Without a channel the
         loop fails safe (deny), same as headless runs.
+
+        `images` (optional) are data URIs attached to this message for
+        vision-capable models (the router picks one when configured).
         """
         message = message.strip()
         if not message:
@@ -155,7 +182,9 @@ class ChatSession:
 
         bus = EventBus()
         agent = self._agent_factory(self.settings, bus)
-        result = await agent.run(self._frame_task(message), approval_cb=approval_cb)
+        result = await agent.run(
+            self._frame_task(message), approval_cb=approval_cb, images=images
+        )
         self.store.append_events(self.session_id, result.events_log)
 
         self.history.append(("user", message))
@@ -200,6 +229,12 @@ class ChatSession:
             "(search, fetch pages, calculate); skip them for small talk. "
             "Keep replies compact, conversational and in the user's language."
         )
+        if self.file_sender is not None:
+            preamble += (
+                " You can deliver files: create them in the workspace with "
+                "write_file or python_exec, then call send_file with the "
+                "workspace-relative path."
+            )
         turns = self.history[-self.settings.chat_history_turns :]
         if not turns:
             return f"{preamble}\n\nUSER MESSAGE:\n{message}"

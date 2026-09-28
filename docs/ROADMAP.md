@@ -34,7 +34,8 @@ The user has no computer — a phone-reachable chat became the priority
 - [x] Shared ChatSession core: transcript memory persisted across restarts, per-message budgets
 - [x] Citation-checked answers in chat (live Cohere run: research turn with verified sources)
 - [x] Free hosting: `deploy/gha-telegram/` — GitHub Actions runner + private-repo state sync (HF Space recipe kept for PRO accounts)
-- [ ] Telegram inline approval buttons (stays in Phase 7 — makes write-tools usable in chat)
+- [x] Telegram inline approval buttons (v0.5 — makes write-tools usable in chat)
+- [x] File channel both ways (v0.6, ADR-13): inbound attachments ingested (text/PDF/zip-listing inlined as untrusted data, photos via vision models, voice via optional ASR, caps everywhere), `send_file` delivers workspace files to the requesting chat, durable size-capped store synced across runner rotations — *verified live on Cohere: "create a CSV and send it" → squares.csv delivered, 11 s*
 
 ## Phase 3 — Persistence, tasks & memory ✅ (v0.4.0)
 

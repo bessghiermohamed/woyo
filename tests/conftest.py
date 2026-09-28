@@ -116,6 +116,8 @@ def pytest_configure(config: pytest.Config) -> None:
     os.environ.setdefault("WOYO_MEMORY_ENABLED", "false")
     # v0.5 sandbox: never write code/workspace artifacts into the real ~/.woyo
     os.environ.setdefault("WOYO_WORKSPACE_DIR", os.path.join(tmp, "workspace"))
+    # v0.6 file transfer: keep the durable inbox/outbox in the throwaway dir too
+    os.environ.setdefault("WOYO_FILES_DIR", os.path.join(tmp, "files"))
 
 
 def make_settings(**kw) -> Settings:

@@ -6,6 +6,7 @@ from collections import defaultdict
 from typing import Any
 
 from woyo.config import Role, Settings
+from woyo.errors import AgentError
 from woyo.events import EventBus
 from woyo.models.base import (
     Message,
@@ -100,6 +101,72 @@ class ModelRouter:
         max_tokens: int | None = None,
     ) -> ModelResponse:
         ref = self.settings.model_for_role(role)
+        has_images = any(m.images for m in messages)
+        if has_images and self.settings.vision_model:
+            # image-bearing calls go to the vision-capable model(s) — the
+            # setting may list several (comma-separated) and each is tried in
+            # order, because free-tier vision models get rate-limited. If all
+            # fail, fall back HONESTLY: strip the images, tell the model it
+            # did not see them, and answer from text on the default model —
+            # never let a run die on a busy vision endpoint, and never let
+            # the model pretend it saw something it didn't.
+            vision_refs = [
+                r.strip() for r in self.settings.vision_model.split(",") if r.strip()
+            ]
+            for vision_ref in vision_refs:
+                try:
+                    return await self._call(
+                        vision_ref, role, messages=messages,
+                        tools=tools, temperature=temperature, max_tokens=max_tokens,
+                    )
+                except AgentError as exc:
+                    if self.bus:
+                        self.bus.emit(
+                            "notice",
+                            reason="vision model unavailable — trying next",
+                            detail=f"{vision_ref}: {str(exc)[:160]}",
+                        )
+            if self.bus:
+                self.bus.emit(
+                    "notice", reason="all vision models unavailable — text fallback"
+                )
+            messages = [
+                m if not m.images else m.model_copy(update={"images": None})
+                for m in messages
+            ] + [
+                Message(
+                    role="user",
+                    content=(
+                        "SYSTEM NOTE: The attached image(s) could not be "
+                        "processed — the vision model is unavailable. You "
+                        "did NOT see the image. Say so plainly, answer "
+                        "from the text alone, and suggest the user resend "
+                        "the image a little later."
+                    ),
+                )
+            ]
+        elif has_images:
+            # no vision model configured: strip images rather than send
+            # image parts to a text-only model (which would error)
+            messages = [
+                m if not m.images else m.model_copy(update={"images": None})
+                for m in messages
+            ]
+        return await self._call(
+            ref, role, messages=messages,
+            tools=tools, temperature=temperature, max_tokens=max_tokens,
+        )
+
+    async def _call(
+        self,
+        ref: str,
+        role: Role,
+        *,
+        messages: list[Message],
+        tools: list[ToolSpec] | None,
+        temperature: float | None,
+        max_tokens: int | None,
+    ) -> ModelResponse:
         provider_name, model = split_model_ref(ref)
         provider = self._provider_for(provider_name)
         est_in = sum(estimate_tokens(m.content) for m in messages)

@@ -18,6 +18,7 @@ from woyo.tools.builtin.core_tools import (
 )
 from woyo.tools.builtin.crawl_site import CrawlSiteTool
 from woyo.tools.builtin.fetch_url import FetchURLTool
+from woyo.tools.builtin.file_transfer import FileSender, SendFileTool
 from woyo.tools.builtin.sandbox import (
     ListDirTool,
     ReadFileTool,
@@ -37,6 +38,7 @@ def build_default_registry(
     include: list[str] | None = None,
     memory: MemoryStore | None = None,
     router=None,  # ModelRouter — enables spawn_agent (sub-agents)
+    file_sender: FileSender | None = None,  # chat transport — enables send_file
 ) -> ToolRegistry:
     """Assemble the standard tool set (see ADR-6: search backends are adapters)."""
     registry = ToolRegistry(bus=bus, cap_chars=settings.tool_output_cap_chars)
@@ -64,6 +66,9 @@ def build_default_registry(
     if router is not None:
         # sub-agents share the caller's router: one budget, one cost account
         tools.append(SpawnAgentTool(settings, router, bus=bus, memory=memory))
+    if file_sender is not None:
+        # chat frontends only: deliver workspace files to the requesting chat
+        tools.append(SendFileTool(settings, file_sender))
     if memory is not None:
         from woyo.tools.builtin.memory_tools import build_memory_tools
 
@@ -89,4 +94,5 @@ __all__ = [
     "WriteFileTool",
     "ListDirTool",
     "SpawnAgentTool",
+    "SendFileTool",
 ]

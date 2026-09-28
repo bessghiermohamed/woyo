@@ -115,6 +115,15 @@ def _to_openai_message(m: Message) -> dict[str, Any]:
             }
             for tc in m.tool_calls
         ]
+    if m.images:
+        # multimodal user turn: text part + image parts (data URIs)
+        parts: list[dict[str, Any]] = []
+        if m.content:
+            parts.append({"type": "text", "text": m.content})
+        parts += [
+            {"type": "image_url", "image_url": {"url": uri}} for uri in m.images
+        ]
+        payload["content"] = parts
     return payload
 
 

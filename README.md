@@ -38,6 +38,8 @@ Most "AI agents" are chatbots with an agent-themed UI. woyo is a from-scratch ag
 
 **Execution, sub-agents & pressable approvals — done (v0.5).** The agent can now *do*, not just research: **`python_exec`** runs code in a sandbox (isolated interpreter, rlimits, scrubbed env so secrets never leak to child processes, optional `--network none` docker tier) with a **persistent workspace**; **`shell_exec`** is a real terminal, denied twice (config flag **and** per-call approval); **workspace file tools** (`read_file`/`write_file`/`list_dir`) with traversal protection; **`spawn_agent`** delegates subtasks to sub-agents (depth-1 by construction, one shared budget, citations still verified by the parent). In Telegram, approvals are **inline Approve/Deny buttons** — the bot shows the exact command and waits for your press (timeout = deny). Verified live end-to-end on Cohere: file → code → correct arithmetic, and sub-agent research delegation.
 
+**Files in, files out — done (v0.6).** The chat became a real file channel. **Send the bot anything**: text/code/data files (contents inlined into its reasoning), PDFs (text extracted, page- and time-capped), archives (listed, never auto-extracted — zip bombs stay inert), photos (**vision** via free OpenRouter models, tried in order with an honest text fallback that never pretends to have seen the image), voice notes (optional ASR). Every extracted byte is wrapped as untrusted data. Files persist across runner rotations in a size-capped durable store. **Ask it to create files**: `write_file`/`python_exec` then **`send_file`** — the document lands right in your chat (verified live on Cohere: "create a CSV and send it" → `squares.csv` delivered with a caption in 11 s). The tool has exactly one possible destination: the chat asking for it.
+
 Roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) — next up: browser automation (Phase 5), web UI (Phase 6), integrations (Phase 7).
 
 ## Quickstart
@@ -112,7 +114,7 @@ woyo is designed to run at $0 for typical use:
 
 </details>
 
-## Built-in tools (v0.5)
+## Built-in tools (v0.6)
 
 | Tool | What it does | Permission |
 |---|---|---|
@@ -129,6 +131,7 @@ woyo is designed to run at $0 for typical use:
 | `shell_exec` | Real terminal in the workspace — needs `WOYO_ENABLE_SHELL=true` **and** per-call approval (inline buttons in chat) | writes_external |
 | `read_file` / `write_file` / `list_dir` | Workspace files with path-traversal protection (v0.5) | read-only / sandboxed |
 | `spawn_agent` | Delegate a subtask to a fresh sub-agent (own plan + budgets, depth-1, shared cost account, citations re-verified by the parent) (v0.5) | read-only |
+| `send_file` | Deliver a workspace file to the user's chat as a document (v0.6; chat frontends only — destination is fixed to the requesting chat) | sandboxed |
 
 Adding your own tool takes ~20 lines:
 

@@ -16,6 +16,10 @@ httpx client woyo already ships. Safety properties:
   from any other chat are ignored. No press within the timeout = deny.
 - A global 409 means another instance is polling with the same token
   (only one may run).
+- Files (v0.6): inbound attachments are downloaded, saved to the durable
+  store + workspace, and ingested into the agent's prompt (see
+  chat/files.py); the send_file tool delivers workspace files back to
+  the requesting chat via sendDocument — no other destination exists.
 """
 
 from __future__ import annotations
@@ -24,10 +28,19 @@ import asyncio
 import html
 import json
 import logging
+import mimetypes
+import shutil
 from pathlib import Path
 
 import httpx
 
+from woyo.chat.files import (
+    DownloadError,
+    FileTooBig,
+    attachment_ref,
+    ingest_attachment,
+    unique_path,
+)
 from woyo.chat.session import ChatReply, ChatSession
 from woyo.config import Settings, env_value
 from woyo.errors import AgentError
@@ -38,17 +51,28 @@ _API = "https://api.telegram.org"
 _CHUNK = 4000  # Telegram hard limit is 4096; leave headroom
 _POLL_TIMEOUT = 50  # seconds the server holds the connection
 _HTTP_TIMEOUT = httpx.Timeout(65.0, connect=15.0)
+_UPLOAD_TIMEOUT = httpx.Timeout(300.0, connect=15.0)  # big document uploads
 
 WELCOME = (
     "👋 I'm *woyo* — an AI agent you can talk to.\n\n"
     "Send me anything: questions to research, things to calculate, code to "
-    "run, files to work with. I plan, use tools — web search, page fetch, "
-    "Python, a workspace with files, sub-agents, and (with your approval) "
-    "shell commands — and I cite verified sources.\n\n"
+    "run — and *files*: documents, code, PDFs, archives, photos (I can view "
+    "them), voice notes. I'll read what you send, work on it, and cite "
+    "verified sources.\n\n"
+    "Ask me to *create* files too — reports, code, CSVs, exports — and I'll "
+    "send them right here in the chat. I can also run Python, keep a "
+    "workspace, spawn sub-agents, and (with your approval) run shell "
+    "commands.\n\n"
     "Commands:\n"
     "/new — start a fresh conversation\n"
     "/status — usage so far\n"
     "/help — this message"
+)
+
+#: What the agent is told when a file arrives with no caption.
+_NO_CAPTION_INSTRUCTION = (
+    "(The user sent this file with no message. Look at it, then briefly "
+    "summarize or analyze it and ask what they would like done with it.)"
 )
 
 
@@ -172,19 +196,33 @@ class TelegramBot:
         chat_id = int((msg.get("chat") or {}).get("id", 0))
         if not chat_id:
             return
-        text = (msg.get("text") or "").strip()
-        if not text:
-            await self._send(chat_id, "I can only read text messages for now 🙂")
+        text = (msg.get("text") or msg.get("caption") or "").strip()
+        attachment = attachment_ref(msg)
+        if msg.get("sticker") and not text and not attachment:
+            if not self._authorized(chat_id):
+                return
+            await self._send(
+                chat_id, "😅 I can't do much with stickers — send text or a file."
+            )
+            return
+        if not text and attachment is None:
+            await self._send(
+                chat_id,
+                "🤔 I couldn't read that message type. Text and files work best.",
+            )
             return
         if not self._authorized(chat_id):
             await self._send(chat_id, "🔒 This bot is private.")
             return
-        if text.startswith("/"):
+        if text.startswith("/") and attachment is None:
             await self._command(chat_id, text)
             return
         # Run as a task so the poller keeps receiving updates — this is
         # what lets a button press arrive while the run awaits an approval.
-        task = asyncio.create_task(self._answer(chat_id, text))
+        if attachment is not None:
+            task = asyncio.create_task(self._answer_attachment(chat_id, msg, text))
+        else:
+            task = asyncio.create_task(self._answer(chat_id, text))
         task.add_done_callback(self._log_task_crash)
 
     @staticmethod
@@ -240,6 +278,52 @@ class TelegramBot:
                 await self._send(chat_id, f"⚠️ {exc}")
             except Exception as exc:  # noqa: BLE001 — never crash the poller
                 log.exception("chat run failed")
+                await self._send(chat_id, f"⚠️ Something went wrong: {exc}")
+            finally:
+                typing.cancel()
+
+    async def _answer_attachment(self, chat_id: int, msg: dict, caption: str) -> None:
+        """Ingest one attached file, then run the agent over it."""
+        lock = self._locks.setdefault(chat_id, asyncio.Lock())
+        if lock.locked():
+            await self._send(chat_id, "⏳ Still working on your last message — one at a time.")
+            return
+        async with lock:
+            typing = asyncio.create_task(self._typing_loop(chat_id))
+            try:
+                try:
+                    ingested = await ingest_attachment(
+                        self._client, self.token, chat_id, msg, self.settings
+                    )
+                except FileTooBig as exc:
+                    await self._send(
+                        chat_id,
+                        f"📦 That file is too big ({exc}). I can handle up to "
+                        f"{self.settings.chat_max_file_mb} MB — Telegram's bot "
+                        "API won't let me download more.",
+                    )
+                    return
+                except (DownloadError, httpx.HTTPError) as exc:
+                    log.warning("attachment download failed: %s", exc)
+                    await self._send(
+                        chat_id,
+                        "⚠️ I couldn't download that file from Telegram. "
+                        "Try sending it again.",
+                    )
+                    return
+                text = caption or _NO_CAPTION_INSTRUCTION
+                reply = await self._session(chat_id).send(
+                    f"{text}\n\n{ingested.note}",
+                    images=ingested.images or None,
+                    approval_cb=lambda tool, args: self._request_approval(
+                        chat_id, tool, args
+                    ),
+                )
+                await self._send_reply(chat_id, reply)
+            except AgentError as exc:
+                await self._send(chat_id, f"⚠️ {exc}")
+            except Exception as exc:  # noqa: BLE001 — never crash the poller
+                log.exception("attachment run failed")
                 await self._send(chat_id, f"⚠️ Something went wrong: {exc}")
             finally:
                 typing.cancel()
@@ -346,9 +430,46 @@ class TelegramBot:
     def _session(self, chat_id: int) -> ChatSession:
         if chat_id not in self._sessions:
             self._sessions[chat_id] = ChatSession(
-                f"telegram:{chat_id}", self.settings
+                f"telegram:{chat_id}",
+                self.settings,
+                file_sender=self._make_file_sender(chat_id),
             )
         return self._sessions[chat_id]
+
+    def _make_file_sender(self, chat_id: int):
+        """Chat-scoped send_file transport: sendDocument + outbox archive."""
+
+        async def sender(path: Path, caption: str) -> None:
+            await self._send_document(chat_id, path, caption)
+            # keep a durable copy so "send me that file again" survives rotation
+            try:
+                outbox = (
+                    Path(self.settings.files_dir).expanduser() / str(chat_id) / "outbox"
+                )
+                outbox.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, unique_path(outbox, path.name))
+            except OSError:
+                pass  # archiving is best-effort
+
+        return sender
+
+    async def _send_document(self, chat_id: int, path: Path, caption: str) -> None:
+        """Upload one file to the chat via multipart sendDocument."""
+        mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        form: dict[str, str] = {"chat_id": str(chat_id)}
+        if caption:
+            form["caption"] = caption[:1024]
+        with path.open("rb") as fh:
+            resp = await self._client.post(
+                f"{_API}/bot{self.token}/sendDocument",
+                data=form,
+                files={"document": (path.name, fh, mime)},
+                timeout=_UPLOAD_TIMEOUT,
+            )
+        resp.raise_for_status()
+        payload = resp.json()
+        if not payload.get("ok"):
+            raise RuntimeError(f"sendDocument failed: {payload}")
 
     async def _send(self, chat_id: int, text: str, *, markdown: bool = False) -> None:
         for chunk in split_message(text):

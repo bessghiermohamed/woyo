@@ -26,7 +26,7 @@ class FakeChatAgent:
         self.tasks = tasks
         self.replies = replies
 
-    async def run(self, task: str, *, approval_cb=None) -> RunResult:
+    async def run(self, task: str, *, approval_cb=None, images=None) -> RunResult:
         self.tasks.append(task)
         spec = self.replies.pop(0)
         return RunResult(

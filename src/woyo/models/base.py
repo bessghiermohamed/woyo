@@ -27,6 +27,10 @@ class Message(BaseModel):
     tool_calls: list[ToolCall] | None = None
     tool_call_id: str | None = None  # role=tool: which call this answers
     name: str | None = None  # role=tool: tool name
+    # multimodal inputs (v0.6): data URIs, e.g. "data:image/jpeg;base64,...".
+    # Only user messages carry them; the router picks a vision-capable model
+    # when they are present (settings.vision_model).
+    images: list[str] | None = None
 
 
 class ToolSpec(BaseModel):

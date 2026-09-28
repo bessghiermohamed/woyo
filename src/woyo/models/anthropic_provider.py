@@ -110,6 +110,18 @@ class AnthropicProvider:
         raise AgentError(f"Anthropic failed after retries: {last_error}")
 
 
+def _parse_data_uri(uri: str) -> tuple[str | None, str]:
+    """'data:image/jpeg;base64,AAAA' -> ('image/jpeg', 'AAAA')."""
+    if not uri.startswith("data:"):
+        return None, ""
+    try:
+        meta, _, payload = uri[5:].partition(",")
+        mime = meta.split(";", 1)[0] or "image/jpeg"
+        return mime, payload
+    except Exception:  # noqa: BLE001 — malformed URIs are dropped, not fatal
+        return None, ""
+
+
 def _convert_messages(messages: list[Message]) -> tuple[str, list[dict[str, Any]]]:
     """Split system text; merge consecutive tool results into user turns."""
     system_parts: list[str] = []
@@ -120,9 +132,23 @@ def _convert_messages(messages: list[Message]) -> tuple[str, list[dict[str, Any]
             if m.content:
                 system_parts.append(m.content)
         elif m.role == "user":
-            converted.append(
-                {"role": "user", "content": [{"type": "text", "text": m.content or ""}]}
-            )
+            blocks: list[dict[str, Any]] = [
+                {"type": "text", "text": m.content or ""}
+            ]
+            for uri in m.images or []:
+                mime, b64 = _parse_data_uri(uri)
+                if mime and b64:
+                    blocks.append(
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": mime,
+                                "data": b64,
+                            },
+                        }
+                    )
+            converted.append({"role": "user", "content": blocks})
         elif m.role == "assistant":
             blocks: list[dict[str, Any]] = []
             if m.content:

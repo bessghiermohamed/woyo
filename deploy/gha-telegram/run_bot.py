@@ -5,8 +5,12 @@ git repo (BOT_STATE_REPO + BOT_STATE_TOKEN env) after every message:
   * telegram_state.json  — update offset + owner claim
   * chats/*.json         — conversation transcripts
   * woyo.sqlite3         — tasks + long-term memory (online-backup snapshot)
+  * files/**             — durable inbox (user attachments) + outbox
+                           (bot deliverables), size-capped
+  * workspace-inbox/**   — the agent-visible copy of user attachments
 On boot the repo is cloned into a temp dir and restored into ~/.woyo, so
-the next runner resumes exactly where this one stopped — including memory.
+the next runner resumes exactly where this one stopped — including memory
+and files.
 
 Secrets this script expects (repo → Settings → Secrets and variables):
   TELEGRAM_BOT_TOKEN   the bot token from @BotFather
@@ -19,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import sqlite3
 import subprocess
 import tempfile
@@ -28,6 +33,12 @@ HOME = Path.home() / ".woyo"
 STATE_FILE = HOME / "telegram_state.json"
 CHATS_DIR = HOME / "chats"
 DB_FILE = HOME / "woyo.sqlite3"
+FILES_DIR = HOME / "files"
+WS_INBOX = HOME / "workspace" / "inbox"
+
+#: budgets that keep the state repo sane (git is not an artifact store)
+_MAX_SYNC_FILE_MB = 8
+_MAX_SYNC_TOTAL_MB = 32
 
 STATE_REPO = os.environ.get("BOT_STATE_REPO", "")
 STATE_TOKEN = os.environ.get("BOT_STATE_TOKEN", "")
@@ -53,9 +64,21 @@ def pull_state() -> None:
     _git("config", "user.email", "woyo-bot@users.noreply.github.com", cwd=CLONE_DIR)
     restored = 0
     for path in CLONE_DIR.rglob("*"):
-        if not path.is_file():
+        if not path.is_file() or path.name == ".gitignore":
             continue
-        if path.name == "telegram_state.json":
+        rel = path.relative_to(CLONE_DIR)
+        top = rel.parts[0] if len(rel.parts) > 1 else ""
+        if top == "files":  # durable inbox/outbox tree
+            dest = FILES_DIR.joinpath(*rel.parts[1:])
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(path.read_bytes())
+            restored += 1
+        elif top == "workspace-inbox":  # agent-visible attachment copies
+            dest = WS_INBOX.joinpath(*rel.parts[1:])
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(path.read_bytes())
+            restored += 1
+        elif path.name == "telegram_state.json":
             STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
             STATE_FILE.write_bytes(path.read_bytes())
             restored += 1
@@ -125,6 +148,75 @@ def _push_file(name: str, path: Path) -> None:
         print(f"warn: state sync of {name} failed: {exc.stderr.strip()[:200]}")
 
 
+def mirror_with_caps(
+    src: Path, dst: Path, *, max_file_mb: int, total_mb: int
+) -> list[Path]:
+    """Mirror `src` into `dst` under size budgets; returns the kept files.
+
+    Files larger than `max_file_mb` are skipped; when the tree exceeds
+    `total_mb`, the oldest files (by mtime) are pruned from BOTH sides —
+    a safety valve so a git-backed state repo never becomes an artifact
+    store. Normal usage stays far below the caps.
+    """
+    if not src.is_dir():
+        return []
+    max_file = max_file_mb * 1024 * 1024
+    kept: list[Path] = []
+    for path in sorted(src.rglob("*")):
+        if not path.is_file():
+            continue
+        try:
+            if path.stat().st_size > max_file:
+                print(f"sync: skipping oversized file {path.name}")
+                continue
+            kept.append(path)
+        except OSError:
+            continue
+    # oldest-first prune when the total budget is exceeded
+    budget = total_mb * 1024 * 1024
+    total = sum(p.stat().st_size for p in kept)
+    if total > budget:
+        kept.sort(key=lambda p: p.stat().st_mtime)
+        dropped: list[Path] = []
+        while total > budget and kept:
+            victim = kept.pop(0)
+            total -= victim.stat().st_size
+            dropped.append(victim)
+        for victim in dropped:
+            print(f"sync: pruning old file {victim.name} (budget)")
+            victim.unlink(missing_ok=True)
+    # mirror what's left
+    if dst.exists():
+        shutil.rmtree(dst)
+    for path in kept:
+        dest = dst.joinpath(*path.relative_to(src).parts)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, dest)
+    return kept
+
+
+def _push_tree(src: Path, clone_rel: str) -> None:
+    """Mirror a durable tree into the state clone and push if it changed."""
+    if CLONE_DIR is None:
+        return
+    try:
+        mirror_with_caps(
+            src, CLONE_DIR / clone_rel,
+            max_file_mb=_MAX_SYNC_FILE_MB, total_mb=_MAX_SYNC_TOTAL_MB,
+        )
+        _git("add", "-A", clone_rel, cwd=CLONE_DIR)
+        staged = subprocess.run(
+            ["git", "diff", "--cached", "--quiet", clone_rel], cwd=CLONE_DIR,
+            capture_output=True,
+        )
+        if staged.returncode == 0:
+            return  # nothing changed since the last sync
+        _git("commit", "-m", f"sync {clone_rel}", cwd=CLONE_DIR)
+        _git("push", cwd=CLONE_DIR)
+    except subprocess.CalledProcessError as exc:
+        print(f"warn: state sync of {clone_rel} failed: {exc.stderr.strip()[:200]}")
+
+
 def main() -> None:
     pull_state()
 
@@ -160,6 +252,8 @@ def main() -> None:
                     orig_save()
                     _push_file(sess._state_path().name, sess._state_path())
                     _push_db()  # tasks + long-term memory ride along
+                    _push_tree(FILES_DIR, "files")  # durable inbox/outbox
+                    _push_tree(WS_INBOX, "workspace-inbox")
 
                 sess._save = save  # type: ignore[method-assign]
             return sess

@@ -127,6 +127,15 @@ class Settings(BaseSettings):
     direct_text_replies: bool = False  # chat: accept prose as the final answer
     chat_approval_timeout_s: int = 120  # telegram inline-button wait
 
+    # --- chat file transfer (v0.6) ---
+    files_dir: str = "~/.woyo/files"  # durable inbox/outbox (synced on runners)
+    chat_max_file_mb: int = 15  # inbound attachment cap (Bot API downloads max 20 MB)
+    chat_max_send_file_mb: int = 45  # outbound upload cap (Bot API uploads max 50 MB)
+    chat_extract_chars: int = 8_000  # extracted text inlined into the prompt per file
+    vision_model: str | None = None  # ref for image-bearing calls, e.g. "openrouter:qwen/qwen3.8-27b:free"
+    chat_asr_provider: str | None = None  # OpenAI-compat transcriptions endpoint, e.g. "groq"
+    chat_asr_model: str = "whisper-large-v3"
+
     # --- persistence, tasks & memory (Phase 3, v0.4) ---
     db_path: str = "~/.woyo/woyo.sqlite3"  # tasks + memories (WAL)
     task_checkpoint: bool = True  # persist run state each step for resume

@@ -71,6 +71,7 @@ class Agent:
         resume_state: dict[str, Any] | None = None,
         checkpoint_cb: CheckpointCallback | None = None,
         control_poll: ControlPoll | None = None,
+        images: list[str] | None = None,
     ) -> RunResult:
         task = task.strip()
         if not task:
@@ -118,7 +119,9 @@ class Agent:
                 plan_text=plan.render(),
                 messages=[
                     Message(role="system", content=system),
-                    Message(role="user", content=f"Task: {task}"),
+                    # image inputs ride on the initial user turn only; the
+                    # router swaps in a vision-capable model when present
+                    Message(role="user", content=f"Task: {task}", images=images),
                 ],
             )
 

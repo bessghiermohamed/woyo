@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "woyo"
-version = "0.5.0"
+version = "0.6.0"
 description = "General-purpose AI agent: understands goals, plans, uses tools, verifies results, and reports back - with human control built in."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -32,6 +32,7 @@ dependencies = [
 anthropic = ["anthropic>=0.40"]
 search = ["ddgs>=9.0"]
 extract = ["trafilatura>=1.12"]
+files = ["pypdf>=4.0", "pillow>=10.0"]  # PDF text extraction + image downscaling
 g4f = ["g4f>=0.4"]
 dev = [
   "pytest>=8.2",
@@ -39,6 +40,8 @@ dev = [
   "ruff>=0.5",
   "anthropic>=0.40",
   "ddgs>=9.0",
+  "pypdf>=4.0",
+  "pillow>=10.0",
 ]
 
 [project.scripts]
