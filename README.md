@@ -44,7 +44,9 @@ Most "AI agents" are chatbots with an agent-themed UI. woyo is a from-scratch ag
 
 **A bot that knows itself, can reach Telegram, and keeps its promises — done (v0.8).** The agent stopped being a stranger inside its own host. **Environment awareness**: every prompt now carries the ground truth of where it runs — "you are the Telegram bot @…, you are INSIDE Telegram, here is the current chat_id, here are the other chats you are in, this is your complete real tool list, and here is what you do NOT have" — so "I can't reach Telegram" is structurally gone (verified live: asked whether it can message a group, it answers *"yes — tell me the group and I'll send it, with your approval"*). **Telegram reach**: four new tools — `list_chats`, `get_chat_info`, `send_telegram_message`, `send_document` — proactive, addressable sends to any chat the bot is actually in (allowlist: unknown destinations are refused with the known list attached; cross-chat sends pass the inline approval gate). **Follow-through**: `schedule_task` turns "I'll do it later" into a row in the database — the scheduler runs it at its time and reports the result (or the failure) back in the chat automatically; `/tasks` lists pending commitments; interrupted jobs are re-queued across host rotations (bounded attempts). Verified live on Cohere: asked for a reminder in two minutes → job scheduled with the id quoted → fired on time with the ⏰ header and a natural reminder, marked `done`.
 
-Roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) — next up: browser automation (Phase 5), web UI (Phase 6), integrations (Phase 7).
+**A real browser under the agent's fingers — done (v0.9, Phase 5).** Eight `browser_*` tools drive a headless chromium following the browser-use accessibility-tree pattern: every action returns a **numbered-element snapshot** ("`[1] link \"Docs\"`", "`[4] button \"Log in\" — SUBMIT-CLASS`"), and the model clicks/types by that number with real Playwright events. **`browser_submit` is the only path to the irreversible click** — submit buttons, password Enter, action-verb controls — and it's WRITES_EXTERNAL, so the Telegram Approve/Deny button fires *before* the click (plain `browser_click` refuses those elements and points there). **Screenshots** become one-shot image observations (vision model swap, payload stripped after the call that saw it, workspace copy saved for `send_file`). Same security posture as everything else: SSRF guard shared with `fetch_url`, optional domain allowlist enforced before/after navigation and on form targets, action budgets + session TTL + idle close, downloads/service-workers/popups blocked, sub-agents get no browser. Bot walls are detected and answered with an honest *"fall back to web_search/fetch_url"* instead of endless retries. Verified on real chromium: multi-page research (navigate → click → extract → search form → screenshot), a form POST that pauses for approval then lands, and challenge-page degradation.
+
+Roadmap: [docs/ROADMAP.md](docs/ROADMAP.md) — next up: web UI (Phase 6), integrations (Phase 7), eval harness (Phase 8).
 
 ## Quickstart
 
@@ -118,7 +120,7 @@ woyo is designed to run at $0 for typical use:
 
 </details>
 
-## Built-in tools (v0.7)
+## Built-in tools (v0.9)
 
 | Tool | What it does | Permission |
 |---|---|---|
@@ -140,6 +142,8 @@ woyo is designed to run at $0 for typical use:
 | `list_chats` / `get_chat_info` | See which chats the bot is in (id, type, title, last activity) and inspect one via the Bot API (v0.8; chat frontends only) | read-only |
 | `send_telegram_message` / `send_document` | Proactively deliver a message or workspace file to any chat the bot is in — allowlisted destinations, cross-chat sends pass the approval gate (v0.8; chat frontends only) | writes_external |
 | `schedule_task` / `list_scheduled_tasks` / `cancel_scheduled_task` | The follow-through layer: commit to a future action (runs at its time, reports the result or failure in the chat automatically), list and cancel by id — `/tasks` in chat (v0.8; chat frontends only) | sandboxed / read-only / sandboxed |
+| `browser_navigate` / `browser_click` / `browser_type` / `browser_extract` / `browser_back` / `browser_screenshot` / `browser_close` | Real headless-chromium browsing with numbered-element snapshots the model acts on by ref; screenshots become image observations (vision model); SSRF + optional domain allowlist; action budgets, session TTL, bot-wall detection with honest search/fetch fallback (v0.9; `browser` extra) | read-only |
+| `browser_submit` | The final click — form submission and irreversible actions; fires the approval gate (inline button in chat) *before* the click; submit-classified elements are refused by `browser_click` and routed here (v0.9; `browser` extra) | writes_external |
 
 Adding your own tool takes ~20 lines:
 

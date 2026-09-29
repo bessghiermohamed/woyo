@@ -33,7 +33,23 @@ jobs:
 
       - name: Install woyo
         if: steps.gate.outputs.has_token == 'true'
-        run: pip install ".[search,extract,files,docs]" # from this checkout — the bot always runs the code it ships with
+        run: pip install ".[search,extract,files,docs,browser]" # from this checkout — the bot always runs the code it ships with
+
+      - name: Browser cache key
+        if: steps.gate.outputs.has_token == 'true'
+        run: echo "PW_VERSION=$(python -m playwright --version | cut -d' ' -f2)" >> "$GITHUB_ENV"
+
+      - name: Chromium cache
+        if: steps.gate.outputs.has_token == 'true'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: pw-chromium-${{ env.PW_VERSION }}
+          restore-keys: pw-chromium-
+
+      - name: Install chromium (browser tools)
+        if: steps.gate.outputs.has_token == 'true'
+        run: python -m playwright install chromium --with-deps
 
       - name: Run the bot (state synced to a private repo)
         if: steps.gate.outputs.has_token == 'true'
@@ -49,5 +65,5 @@ jobs:
           WOYO_ENABLE_CODE_EXEC: "true" # python_exec + workspace files
           WOYO_ENABLE_SHELL: "true"     # terminal — every call still needs a button-press approval
           WOYO_ROTATE_AFTER_MIN: "290"   # self-rotate safely under the 350-min job ceiling; the bot dispatches its own successor
-          WOYO_VISION_MODEL: "openrouter:dots-studio/dots-3-note-preview:free,openrouter:qwen/qwen3.8-27b:free" # photos -> free vision models, tried in order (needs OPENROUTER_API_KEY)
+          WOYO_VISION_MODEL: "openrouter:dots-studio/dots-3-note-preview:free,openrouter:qwen/qwen3.8-27b:free" # photos + browser screenshots -> free vision models, tried in order (needs OPENROUTER_API_KEY)
         run: python deploy/gha-telegram/run_bot.py

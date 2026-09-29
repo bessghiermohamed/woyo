@@ -124,3 +124,53 @@ Users can send the bot files, and the bot can send files back. The rules:
 - **Images are re-encoded before they become model inputs.** Downscale to ≤1568px, JPEG quality 85, EXIF/GPS stripped. When vision is enabled, images leave the host to a third-party vision provider (OpenRouter free tier today) — the same data-minimization expectation that applies to message text applies to pixels.
 - **send_file has exactly one possible destination.** The chat that is already talking to the agent. Paths resolve inside the workspace (traversal refused), uploads cap at 45 MB (Telegram's ceiling is 50), and the filename + caption arrive as a visible message — nothing covert leaves the host. Sub-agents do not get the tool; only the parent conversation can deliver files.
 - **The durable file store cannot become an exfil stash.** It syncs to the private state repo under hard caps (8 MB per file, 32 MB total, oldest-first pruning), so even a fully compromised agent cannot park more than that in the one git remote it can reach — and that remote is the user's own private repo.
+
+## Browser automation (v0.9)
+
+The agent drives a real headless chromium (Playwright). The page is the
+most hostile surface woyo touches — every mitigation from fetch_url
+applies, plus browser-specific ones:
+
+- **SSRF parity with fetch_url.** Navigation targets must be http(s) on
+  standard ports; DNS is resolved and private/loopback/link-local
+  addresses are refused (opt-in escape hatch for intranets:
+  `WOYO_BROWSER_ALLOW_PRIVATE_HOSTS=true`). Residual, documented: the
+  browser navigates by hostname, so a DNS-rebinding attacker could re-
+  resolve between the check and the connection — the same TOCTOU class
+  any fetch-then-connect tool has. The optional domain allowlist is the
+  compensating control for strict deployments.
+- **Allowlist enforced twice.** When `WOYO_BROWSER_ALLOWLIST` is set,
+  navigation is checked up front, and after every action the page's
+  current host is re-checked; a page that escaped (JS redirect, meta
+  refresh) is bounced to about:blank with an honest error. Form submit
+  targets (form actions) are checked before the final click too.
+- **The irreversible click is approval-gated, structurally.** Only
+  `browser_submit` can click submit-classified elements — form submit
+  buttons, password-field Enter submissions, and action-verb controls
+  ("delete account", "buy", "unsubscribe"...). It is WRITES_EXTERNAL, so
+  the runtime asks the user first (inline button in Telegram; hard deny
+  headless). `browser_click` refuses those refs with a pointer to
+  browser_submit; `browser_type` refuses press_enter on password fields.
+  Residual, documented: a plain-looking link can still be irreversible
+  (GET endpoints that mutate). The walker's action-verb heuristic is the
+  backstop, not a guarantee — the primary control is the model-facing
+  rule plus the allowlist for strict deployments.
+- **Pages are data, not instructions.** Snapshots and extracts are
+  wrapped `<untrusted>` with injection flagging, exactly like fetch_url
+  content. Screenshots ride to the model as one-shot image observations
+  (stripped after the call that saw them); a page that renders "ignore
+  your instructions" in pixels is the same class of attack as one that
+  renders it in text — the untrusted-data discipline covers both.
+- **The browser is capped, closed, and ephemeral.** Downloads disabled,
+  service workers blocked, popups closed, viewport fixed, 40 actions per
+  session, 15-minute session TTL, idle close, ≤3 concurrent contexts
+  (LRU eviction), 150-element annotation cap, 4 KB JS-side text slice.
+  Sessions die with the host rotation; a fresh one starts on demand.
+- **The user agent is honest about being a browser, not a human.** The
+  UA string is a plain desktop Chrome (no "Headless" marker) so pages
+  render their normal variant — rendering parity, not an identity claim.
+  Bot walls are detected (status + challenge signatures) and reported as
+  what they are, with an explicit instruction to fall back to
+  web_search/fetch_url instead of retrying.
+- **Sub-agents get no browser.** The `_CHILD_TOOLS` include-list
+  excludes every browser_* tool; only the parent conversation browses.

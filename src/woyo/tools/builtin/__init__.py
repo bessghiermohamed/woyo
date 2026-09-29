@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 import httpx
 
 from woyo.config import Settings
@@ -9,6 +11,11 @@ from woyo.events import EventBus
 from woyo.memory.longterm import MemoryStore
 from woyo.tools.base import Tool, ToolRegistry, UserInteraction
 from woyo.tools.builtin.agent_tool import SpawnAgentTool
+from woyo.tools.builtin.browser import (
+    BrowserManager,
+    build_browser_tools,
+    get_default_manager,
+)
 from woyo.tools.builtin.core_tools import (
     AskUserTool,
     CalculateTool,
@@ -55,6 +62,8 @@ def build_default_registry(
     telegram: TelegramTransport | None = None,  # enables the telegram tools
     job_store=None,  # JobStore — enables the scheduler tools
     chat_id: int | None = None,  # the chat the scheduler tools act for
+    browser: BrowserManager | None = None,  # shared browser manager (chat)
+    browser_key: str | None = None,  # stable session key; None = per-run
 ) -> ToolRegistry:
     """Assemble the standard tool set (see ADR-6: search backends are adapters)."""
     registry = ToolRegistry(bus=bus, cap_chars=settings.tool_output_cap_chars)
@@ -105,6 +114,12 @@ def build_default_registry(
         from woyo.tools.builtin.memory_tools import build_memory_tools
 
         tools += build_memory_tools(memory, bus=bus)
+    # browser automation: a stable key keeps the page alive across a chat's
+    # per-message agent rebuilds; task/CLI runs get a fresh key per run
+    manager = browser or get_default_manager(settings)
+    tools += build_browser_tools(
+        settings, manager, browser_key or f"run:{uuid.uuid4().hex[:8]}"
+    )
     for tool in tools:
         if include is None or tool.name in include:
             registry.register(tool)

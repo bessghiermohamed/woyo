@@ -39,6 +39,7 @@ class ToolResult(BaseModel):
     control: str | None = None  # e.g. "finish" — control-flow signals
     untrusted: bool = False     # content came from the outside world
     flagged: bool = False       # injection-shaped content detected
+    images: list[str] | None = None  # data URIs for vision models (screenshots)
 
     @classmethod
     def ok_result(cls, content: str, **kw: Any) -> ToolResult:

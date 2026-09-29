@@ -169,6 +169,14 @@ class Agent:
                     tool_calls=resp.tool_calls or None,
                 )
             )
+            # screenshots are one-shot: the executor call above has now
+            # SEEN any image observations — strip the payloads so later
+            # calls (and checkpoints) stay lean. The router never mutates
+            # the originals, so this is safe.
+            if any(m.images for m in state.messages):
+                for m in state.messages:
+                    if m.images:
+                        m.images = None
 
             if not resp.tool_calls:
                 # text-only reply: task mode nudges once and accepts the second
@@ -203,6 +211,7 @@ class Agent:
 
             state.text_only_strikes = 0
             stop_reason: str | None = None
+            pending_images: list[str] = []  # screenshots from this step's tools
             for tc in resp.tool_calls:
                 # per-task search budget (Phase 2)
                 if (tc.name in _SEARCH_TOOLS
@@ -249,6 +258,12 @@ class Agent:
                         content=observation,
                     )
                 )
+                if result.images:
+                    # image observations (browser screenshots): ride on a
+                    # user turn right after the tool result so both OpenAI-
+                    # compat and Anthropic render them; the router swaps to
+                    # the vision model for this call
+                    pending_images.extend(result.images)
                 state.tool_calls += 1
                 if finish_payload is not None:
                     final = finish_payload
@@ -264,6 +279,19 @@ class Agent:
                     if state.consecutive_failures >= 4:
                         stop_reason = "too many consecutive tool failures"
                         break
+
+            # --- image observations ride on ONE user turn per step ------
+            if pending_images:
+                state.messages.append(
+                    Message(
+                        role="user",
+                        content=(
+                            "[image observation(s) attached by a tool — "
+                            "browser screenshot(s) from this step]"
+                        ),
+                        images=pending_images[:3],
+                    )
+                )
 
             # --- checkpoint after every executor step -----------------
             self._checkpoint(state, elapsed_now(), checkpoint_cb)

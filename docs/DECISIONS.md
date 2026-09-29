@@ -208,3 +208,59 @@ decisions:
 - **Sub-agents still can't touch any of this.** The fixed `_CHILD_TOOLS`
   include-list predates the new tools, so children structurally lack
   Telegram reach and the scheduler — delegation stays compute-shaped.
+
+## ADR-16: A real browser, accessibility-tree style — refs, budgets, and one approval-gated final click (v0.9)
+
+**Context.** Phase 5 asked for Playwright-driven browser automation
+following the browser-use accessibility-tree pattern: navigate/click/
+type/extract/screenshot, action budgets, domain allowlists, approval on
+submissions, screenshots as observations. The exit criteria: multi-page
+research with sources; a form submission that pauses for approval; bot
+walls degrading to search+fetch gracefully.
+
+**Decision.**
+
+- **Numbered-element snapshots, not raw DOM.** After every action, a JS
+  walker tags visible interactive elements with `data-woyo-ref="N"` and
+  returns a compact page view: title, URL, budget line, text preview,
+  and the element list (`[12] link "Docs" -> ...`). The model references
+  elements by that number; tools resolve it to a real Playwright locator
+  — genuine mouse/keyboard events, auto-waiting, no fragile CSS
+  selectors in the transcript. Re-annotation happens before every click/
+  type because living pages mutate between observations.
+- **Eight small tools, one shared session.** navigate/click/type/
+  extract/screenshot/back/close are READ_ONLY; submit is
+  WRITES_EXTERNAL — the loop's existing approval gate (Telegram inline
+  buttons) becomes the "final click" pause with zero new approval code.
+  click refuses submit-classified refs and points at browser_submit;
+  type refuses Enter on password fields. A long-lived BrowserManager
+  keyed by chat keeps the page alive across a conversation's per-message
+  agent rebuilds; task/CLI runs get a per-run key. Sessions carry an
+  action budget (40), TTL (15 min), idle close, and a 3-context LRU cap;
+  chromium launches lazily, dies with the host, and is released on
+  graceful rotation.
+- **Screenshots as one-shot image observations.** ToolResult grew an
+  `images` field (data URIs); the loop rides them on a user turn right
+  after the tool result (the shape both OpenAI-compat and Anthropic
+  render), the router swaps to the vision model for that call, and the
+  payload is stripped after the executor has seen it — checkpoints stay
+  lean and later calls don't pay for pixels twice. A workspace copy is
+  saved under screenshots/ so send_file can deliver the proof.
+- **Honest degradation, honest identity.** Navigation validates like
+  fetch_url (SSRF guard shared, allowlist on top); bot walls (403/429/
+  503 + challenge signatures) return a typed observation that names the
+  fallback path (web_search/fetch_url) and forbids retrying the browser
+  against it. The UA is plain desktop Chrome for rendering parity — no
+  Headless marker, and no pretense of being human anywhere else.
+- **Security posture unchanged: allowlists, approvals, limits.** See
+  SECURITY.md "Browser automation (v0.9)" — the allowlist is enforced
+  before navigation, after every action, and on form targets; downloads/
+  service workers/popups are blocked; sub-agents structurally get no
+  browser.
+
+**Consequences.** The bot can now work JS-only sites, paginated
+research, and form flows that fetch_url cannot reach — with the same
+injection discipline (pages are data) and the same human gate on
+irreversible actions as every other external write. The DOM walker JS
+is validated by an opt-in real-chromium test layer (WOYO_TEST_REAL_
+BROWSER=1) rather than by the mock suite, which stays network-free.

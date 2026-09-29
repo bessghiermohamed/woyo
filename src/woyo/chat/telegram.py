@@ -87,6 +87,9 @@ WELCOME = (
     "and files to *other chats I'm in* (I'll ask you to approve those), run "
     "Python, keep a workspace, spawn sub-agents, and (with your approval) "
     "run shell commands.\n\n"
+    "🌐 I also drive a *real browser*: I can open pages, click, fill forms, "
+    "extract what they say, and take screenshots I actually look at. Forms "
+    "and irreversible actions always wait for your Approve button.\n\n"
     "⏰ *I keep my promises:* ask me to do something *later* — a reminder, a "
     "delayed report, a follow-up — and I'll schedule it so it actually runs "
     "at that time and reports back here, with the result or the reason it "
@@ -329,6 +332,15 @@ class TelegramBot:
                     "a minute or two — no need to resend it.",
                 )
         self._save_state()
+        # release chromium before the runner goes away (browser sessions are
+        # ephemeral by design; browser_navigate starts a fresh one on the
+        # next host)
+        try:
+            from woyo.tools.builtin.browser import close_default_manager
+
+            await close_default_manager()
+        except Exception as exc:  # noqa: BLE001 — cleanup must never throw
+            log.debug("browser cleanup skipped: %s", exc)
 
     async def _drain_journal(self) -> None:
         """Answer requests that were fetched but left unanswered by a

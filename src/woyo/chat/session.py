@@ -238,6 +238,7 @@ class ChatSession:
                 telegram=recording_transport,
                 job_store=session.job_store,
                 chat_id=session.chat_id,
+                browser_key=session.key,  # page survives across turns
             )
             session._tool_names = registry.names()
             return Agent(settings, router, registry, bus=bus, memory=memory)

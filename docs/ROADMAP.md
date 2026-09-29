@@ -54,13 +54,15 @@ Shipped in v0.5.0: two-tier sandbox — `local` backend (isolated interpreter `-
 - [x] Sandbox escape attempts in tests stay contained — *path-traversal blocked (read/write/list), env scrubbing verified against planted secrets (TELEGRAM_BOT_TOKEN/BOT_STATE_TOKEN never visible to child processes), timeout kill, output caps; docker backend runs `--network none`*
 - [x] Agent analyzes a CSV dataset end-to-end and produces a report file — *verified live on Cohere: write_file → python_exec over the file → correct sum/product reported (12.4s); sub-agent delegation verified live (research micro-task, 36.7s)*
 
-## Phase 5 — Browser automation
+## Phase 5 — Browser automation ✅ (v0.9.0)
 
 Playwright-driven browser tool following the browser-use accessibility-tree pattern: navigate/click/type/extract/screenshot, action budgets, domain allowlists, approval on submissions (the "final click"). Screenshots as observations for the model.
 
-- [ ] Multi-page research workflow completes with sources
-- [ ] A form-submission flow pauses for approval before the irreversible action
-- [ ] Bot-wall / failure handling degrades to search+fetch gracefully
+Shipped in v0.9.0: eight `browser_*` tools over one lazily-launched headless chromium per conversation (`BrowserManager`, keyed by chat so the page survives across a chat's per-message agent rebuilds); numbered-element snapshots from a DOM walker (`data-woyo-ref` tags → real Playwright locator clicks/fills); `browser_submit` is the only path to submit-classified elements — WRITES_EXTERNAL, so the Telegram inline Approve/Deny button fires before the irreversible click (`browser_click` refuses those refs; `browser_type` refuses password+Enter); screenshots ride as one-shot image observations (router swaps to the vision model, payload stripped after the call that saw it, workspace copy saved for `send_file`); SSRF guard shared with fetch_url + optional domain allowlist enforced before navigation, after every action, and on form targets; bot-wall detection (status + challenge signatures) returns a typed observation that names the search+fetch fallback and forbids browser retries; budgets: 40 actions/session, 15-min TTL, idle close, 3-context LRU cap, downloads/service-workers/popups blocked.
+
+- [x] Multi-page research workflow completes with sources — *verified on real chromium (local E2E): navigate → follow link → extract (token found) → back → form search via type+Enter → screenshot saved; citations flow through data.url like fetch_url*
+- [x] A form-submission flow pauses for approval before the irreversible action — *verified twice: loop-level (denied browser_submit never clicks, observation says so) and real chromium (Sign-up POST refused by browser_click with needs_approval; through browser_submit it lands on the server)*
+- [x] Bot-wall / failure handling degrades to search+fetch gracefully — *verified on real chromium: challenge page → typed error naming web_search/fetch_url and forbidding browser retries*
 
 ## Phase 6 — API server + web UI
 

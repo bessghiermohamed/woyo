@@ -127,6 +127,16 @@ class Settings(BaseSettings):
     direct_text_replies: bool = False  # chat: accept prose as the final answer
     chat_approval_timeout_s: int = 120  # telegram inline-button wait
 
+    # --- browser automation (Phase 5, v0.9) ---
+    browser_enabled: bool = True  # active when the `browser` extra is installed
+    browser_allowlist: str = ""  # comma-separated domains; empty = public web
+    browser_allow_private_hosts: bool = False  # intranet/test escape hatch
+    browser_max_actions: int = 40  # actions per session (navigate/click/...)
+    browser_session_ttl_s: int = 900  # hard session lifetime
+    browser_idle_close_s: int = 300  # inactivity close
+    browser_max_sessions: int = 3  # concurrent chromium contexts per process
+    browser_no_sandbox: bool = False  # constrained hosts only (weakens isolation)
+
     # --- chat file transfer (v0.6) ---
     files_dir: str = "~/.woyo/files"  # durable inbox/outbox (synced on runners)
     chat_max_file_mb: int = 15  # inbound attachment cap (Bot API downloads max 20 MB)
