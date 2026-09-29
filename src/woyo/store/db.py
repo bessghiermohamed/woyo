@@ -12,7 +12,7 @@ from pathlib import Path
 
 from woyo.config import Settings
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS tasks (
@@ -64,6 +64,26 @@ CREATE TABLE IF NOT EXISTS memories (
     meta_json        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_memories_kind ON memories(kind);
+
+-- v0.8: scheduled jobs (the follow-through layer — "I will" becomes a row)
+CREATE TABLE IF NOT EXISTS jobs (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id        INTEGER NOT NULL,             -- telegram chat to run + report in
+    title          TEXT NOT NULL,
+    prompt         TEXT NOT NULL,                -- agent task executed when due
+    run_at         TEXT NOT NULL,                -- ISO UTC timestamp
+    status         TEXT NOT NULL DEFAULT 'scheduled',
+        -- scheduled | running | done | failed | cancelled
+    attempts       INTEGER NOT NULL DEFAULT 0,   -- host rotations survived
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT,
+    finished_at    TEXT,
+    error          TEXT,
+    result_preview TEXT,
+    meta_json      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
+CREATE INDEX IF NOT EXISTS idx_jobs_chat ON jobs(chat_id);
 """
 
 
@@ -84,7 +104,11 @@ def connect(path: str | Path) -> sqlite3.Connection:
 
 
 def migrate(conn: sqlite3.Connection) -> sqlite3.Connection:
-    """Create/upgrade the schema (idempotent, forward-only)."""
+    """Create/upgrade the schema (idempotent, forward-only).
+
+    Every object is CREATE ... IF NOT EXISTS, so a v1 database upgraded to
+    v2 simply grows the `jobs` table — existing rows are never touched.
+    """
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     if version < SCHEMA_VERSION:
         conn.executescript(_SCHEMA)

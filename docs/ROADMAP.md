@@ -74,6 +74,7 @@ FastAPI + SSE streaming the existing event bus; React UI (task view, plan, tool 
 
 GitHub first (dogfood: woyo works on woyo — issues, PRs, releases), then Gmail / Calendar / Drive / Telegram per OAuth with per-integration grants, scoped tokens, and revocation. Each integration = Tool classes + a permission profile.
 
+- [x] **Telegram reach + awareness + follow-through (v0.8, pulled forward):** the agent knows it lives inside Telegram (environment block: @username, current chat_id, known chats, real tool list, honest CANNOT-list); `list_chats` / `get_chat_info` / `send_telegram_message` / `send_document` reach any chat the bot is actually in (allowlisted, cross-chat sends approval-gated); `schedule_task` / `list_scheduled_tasks` / `cancel_scheduled_task` + `/tasks` turn "I'll do it later" into database rows that run on time and report back. Verified live on Cohere (Arabic): reminder scheduled with id quoted → fired on time → `done`.
 - [ ] An integration performs an external write only after explicit approval
 - [ ] Tokens revocable per integration; least-scope documented
 

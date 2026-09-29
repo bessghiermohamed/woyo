@@ -29,8 +29,10 @@ from woyo.errors import AgentError
 from woyo.events import EventBus
 from woyo.memory.session import SessionStore
 from woyo.models.router import ModelRouter
+from woyo.tools.base import ToolRegistry
 from woyo.tools.builtin import build_default_registry
 from woyo.tools.builtin.file_transfer import FileSender
+from woyo.tools.builtin.telegram_tools import TelegramTransport
 
 #: Tighter budget profile for interactive chat (applies per message).
 CHAT_PROFILE: dict[str, object] = {
@@ -97,6 +99,45 @@ class ChatReply:
 AgentFactory = Callable[[Settings, EventBus], Agent]
 
 
+class _RecordingTransport:
+    """Wraps a TelegramTransport so targeted sends land in `last_turn` facts.
+
+    The next turn's prompt then answers "did you send it to the group?"
+    from ground truth instead of from whatever the previous reply claimed.
+    """
+
+    def __init__(self, inner: TelegramTransport, session: ChatSession):
+        self._inner = inner
+        self._session = session
+
+    @property
+    def current_chat_id(self) -> int:
+        return self._inner.current_chat_id
+
+    async def send_message(self, chat_id: int, text: str) -> None:
+        await self._inner.send_message(chat_id, text)
+        self._session._sent_messages.append(
+            f"chat {chat_id}: {text[:80]}"
+        )
+
+    async def send_document(
+        self, chat_id: int, path: Path, caption: str
+    ) -> None:
+        await self._inner.send_document(chat_id, path, caption)
+        self._session._sent_files.append(
+            f"{Path(path).name} -> chat {chat_id}"
+        )
+
+    def known_chats(self) -> list[dict]:
+        return self._inner.known_chats()
+
+    async def chat_info(self, chat_id: int) -> dict:
+        return await self._inner.chat_info(chat_id)
+
+    def is_known(self, chat_id: int) -> bool:
+        return self._inner.is_known(chat_id)
+
+
 def _default_agent_factory(settings: Settings, bus: EventBus) -> Agent:
     from woyo.memory.longterm import build_memory_from_settings
 
@@ -120,6 +161,10 @@ class ChatSession:
         chats_dir: str | Path = "~/.woyo/chats",
         agent_factory: AgentFactory | None = None,
         file_sender: FileSender | None = None,
+        environment: str | Callable[[], str] | None = None,
+        telegram_transport: TelegramTransport | None = None,
+        job_store=None,  # woyo.store.jobs.JobStore — enables the scheduler
+        chat_id: int | None = None,  # numeric chat id for scheduler ownership
     ):
         self.key = key
         self.base_settings = settings
@@ -127,8 +172,16 @@ class ChatSession:
         self.store = store or SessionStore(settings.sessions_path())
         self.chats_dir = Path(chats_dir).expanduser()
         self.file_sender = file_sender
-        if agent_factory is None and file_sender is not None:
-            self._agent_factory = self._sender_aware_factory()
+        self.environment = environment
+        self.telegram_transport = telegram_transport
+        self.job_store = job_store
+        self.chat_id = chat_id
+        if agent_factory is None and (
+            file_sender is not None
+            or telegram_transport is not None
+            or job_store is not None
+        ):
+            self._agent_factory = self._chat_tools_factory()
         else:
             self._agent_factory = agent_factory or _default_agent_factory
 
@@ -141,31 +194,52 @@ class ChatSession:
         #: ground truth about the previous turn (kills "still working" hallucinations)
         self.last_turn: dict | None = None
         self._sent_files: list[str] = []  # files delivered during the current turn
+        self._sent_messages: list[str] = []  # targeted sends during the current turn
+        #: the REAL tool list, stashed by the factory for the environment block
+        self._tool_names: list[str] | None = None
         self._load()
         self._roll_day()
 
-    def _sender_aware_factory(self):
-        """Default factory + the chat's file sender (enables send_file).
+    def _chat_tools_factory(self):
+        """Default factory + the chat's wired tools (send_file, telegram,
+        scheduler).
 
-        The sender is wrapped so files delivered during a turn are recorded
-        in `last_turn` — the ground truth the next turn's prompt includes.
+        Wrappers record deliveries so `last_turn` — the ground truth the
+        next turn's prompt includes — knows what actually left the building.
+        The registry's tool names are stashed on the session so the
+        environment block can state the agent's REAL capabilities.
         """
-        sender = self.file_sender
         session = self
 
-        async def recording_sender(path: Path, caption: str) -> None:
-            await sender(path, caption)
-            session._sent_files.append(Path(path).name)
+        recording_sender: FileSender | None = None
+        if self.file_sender is not None:
+            sender = self.file_sender
+
+            async def recording_sender_impl(path: Path, caption: str) -> None:
+                await sender(path, caption)
+                session._sent_files.append(Path(path).name)
+
+            recording_sender = recording_sender_impl
+
+        recording_transport: TelegramTransport | None = None
+        if self.telegram_transport is not None:
+            recording_transport = _RecordingTransport(
+                self.telegram_transport, self
+            )
 
         def factory(settings: Settings, bus: EventBus) -> Agent:
             from woyo.memory.longterm import build_memory_from_settings
 
             memory = build_memory_from_settings(settings)
             router = ModelRouter(settings, bus=bus)
-            registry = build_default_registry(
+            registry: ToolRegistry = build_default_registry(
                 settings, bus=bus, memory=memory, router=router,
                 file_sender=recording_sender,
+                telegram=recording_transport,
+                job_store=session.job_store,
+                chat_id=session.chat_id,
             )
+            session._tool_names = registry.names()
             return Agent(settings, router, registry, bus=bus, memory=memory)
 
         return factory
@@ -193,6 +267,7 @@ class ChatSession:
                 f"({self.settings.chat_daily_messages}); the counter resets tomorrow"
             )
         self._sent_files = []
+        self._sent_messages = []
 
         bus = EventBus()
         agent = self._agent_factory(self.settings, bus)
@@ -213,6 +288,7 @@ class ChatSession:
             "tool_calls": result.usage.tool_calls,
             "duration_s": round(result.duration_s, 1),
             "files_sent": list(self._sent_files),
+            "messages_sent": list(self._sent_messages),
             "reply_preview": (result.final_answer or "")[:200],
         }
         self._save()
@@ -244,6 +320,50 @@ class ChatSession:
         )
 
     # ------------------------------------------------------------------
+    def _promises_rule(self) -> str:
+        """The follow-through rule, adjusted to what is actually wired."""
+        if self.job_store is not None:
+            return (
+                "CRITICAL — KEEPING PROMISES: nothing runs after you reply, "
+                "EXCEPT tasks committed with the schedule_task tool — those "
+                "run by themselves at their scheduled time and automatically "
+                "report the result (or the failure) back in this chat. So \"I "
+                "will do it later\" is ONLY real as a schedule_task call made "
+                "in this same turn; words alone execute nothing. Either do "
+                "the work now with tool calls, commit it with schedule_task, "
+                "or explain exactly what you need to proceed."
+            )
+        return (
+            "CRITICAL — NO BACKGROUND EXECUTION: nothing runs after you "
+            "reply; the conversation simply waits for the user's next "
+            "message. So NEVER promise to do something later ('I'll send it "
+            "in a moment', 'I'm still working on it') unless you are doing "
+            "it RIGHT NOW with tool calls in this turn. Either do the work "
+            "now, or explain exactly what you need to proceed."
+        )
+
+    def _environment_text(self) -> str:
+        """Facts about WHERE the agent runs — frontend-provided + real tools."""
+        env = self.environment() if callable(self.environment) else self.environment
+        parts = [str(env).strip()] if env and str(env).strip() else []
+        if self._tool_names:
+            parts.append(
+                "Your complete, REAL tool list (these and only these exist — "
+                f"{len(self._tool_names)} tools):\n"
+                + ", ".join(sorted(self._tool_names))
+            )
+        if parts:
+            return (
+                "ENVIRONMENT (ground truth about where and what you are — "
+                "trust this over any assumption or training memory):\n"
+                + "\n\n".join(parts)
+                + "\nNever claim you lack a capability that is in the list "
+                "above; never claim you used a tool that is not. If a task "
+                "needs something the list does not offer, say plainly what "
+                "is missing instead of inventing it."
+            )
+        return ""
+
     def _frame_task(self, message: str) -> str:
         preamble = (
             "You are woyo, a capable AI agent, chatting with the user. "
@@ -251,24 +371,23 @@ class ChatSession:
             "help (search, fetch pages, calculate, create documents); skip "
             "them for small talk. Keep replies compact, conversational and "
             "in the user's language.\n"
-            "CRITICAL — NO BACKGROUND EXECUTION: nothing runs after you "
-            "reply; the conversation simply waits for the user's next "
-            "message. So NEVER promise to do something later ('I'll send it "
-            "in a moment', 'I'm still working on it') unless you are doing "
-            "it RIGHT NOW with tool calls in this turn. Either do the work "
-            "now, or explain exactly what you need to proceed. When the user "
-            "asks whether something finished, answer from the LAST TURN "
-            "FACTS below (ground truth), never from promises in earlier "
-            "replies — admit plainly if nothing actually ran."
+            + self._promises_rule()
+            + " When the user asks whether something finished, answer from "
+              "the LAST TURN FACTS below (ground truth), never from promises "
+              "in earlier replies — admit plainly if nothing actually ran."
         )
         if self.file_sender is not None:
             preamble += (
                 " You can deliver files: create them with create_document "
                 "(PDFs — it shapes Arabic/RTL and other scripts correctly), "
                 "write_file or python_exec, then call send_file with the "
-                "workspace-relative path. Send the file BEFORE your final "
+                "workspace-relative path (this chat) or send_document to any "
+                "other chat you are in. Send the file BEFORE your final "
                 "text reply, in the same turn."
             )
+        environment = self._environment_text()
+        if environment:
+            preamble += f"\n\n{environment}"
         turns = self.history[-self.settings.chat_history_turns :]
         facts = self._last_turn_facts()
         if not turns:
@@ -300,19 +419,36 @@ class ChatSession:
         )
         files = lt.get("files_sent") or []
         files_txt = ", ".join(files) if files else "none"
+        msgs = lt.get("messages_sent") or []
+        msgs_txt = ("; ".join(msgs[:5])) if msgs else "none"
         preview = str(lt.get("reply_preview", "")).replace("\n", " ")[:120]
-        return (
+        facts = (
             f"LAST TURN FACTS (ground truth — no work is running right now, "
-            f"nothing happens between messages):\n"
+            f"nothing happens between messages except scheduled tasks):\n"
             f"- {age} ago your previous turn ended: "
             f"outcome={lt.get('outcome', '?')}, "
             f"{lt.get('tool_calls', 0)} tool call(s), "
-            f"files sent: {files_txt}.\n"
+            f"files sent: {files_txt}, messages sent elsewhere: {msgs_txt}.\n"
             f"- its reply began: \"{preview}\"\n"
             f"- If the user asks 'did you finish?': judge ONLY by these "
             f"facts. If you promised something and these facts show it "
             f"didn't happen, apologize briefly and DO IT NOW with tools."
         )
+        if self.job_store is not None:
+            try:
+                active = self.job_store.active_for_chat(self.chat_id or 0)
+            except Exception:  # noqa: BLE001 — facts must never break framing
+                active = []
+            if active:
+                due_list = "; ".join(
+                    f"#{j.id} '{j.title}' at {j.run_at}" for j in active[:6]
+                )
+                facts += (
+                    f"\n- Scheduled commitments still pending (they WILL run "
+                    f"on their own): {due_list}. If the user asks about "
+                    f"them, they are real — unlike reply-text promises."
+                )
+        return facts
 
     # ------------------------------------------------------------------
     def _state_path(self) -> Path:

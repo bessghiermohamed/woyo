@@ -143,3 +143,68 @@ The decisions:
 - **Every fetched update is journaled before processing.** The pending journal lives in `telegram_state.json` (already synced to the state repo per message) and an entry is removed only after a reply actually went out — including the "⚠️ something went wrong" path. A host killed mid-turn (timeout, runner loss, SIGKILL) leaves the entry on disk; the next boot drains the journal and answers the request. The offset alone would have silently swallowed it: that was the failure class behind "he never sent anything after that".
 - **Rotation is scheduled by the bot, not suffered at the timeout.** GitHub's per-job ceiling is 360 minutes; being killed there loses in-flight work and (empirically) scheduled runs are not even created while the concurrency group is busy — after a timeout kill the bot waited for the next cron tick, a dead gap of up to 30 minutes. Now the bot self-rotates at `WOYO_ROTATE_AFTER_MIN` (default 290): stop polling, wait up to a grace for in-flight turns, tell still-busy chats their request is saved, sync state, and **dispatch its own successor** via the GitHub API (workflow_dispatch with the state PAT — the default `GITHUB_TOKEN` would not start the run). The successor sits in the concurrency queue and starts seconds after exit. Backstops: the */30 cron (which fires exactly when the group is free — i.e., when the chain broke) and a */5 watchdog workflow that dispatches a run when none is active or queued.
 - **Graceful exit is a first-class path.** `run_forever` accepts a runtime budget and a shutdown event; SIGTERM/SIGINT set the event (draining politely beats dying mid-poll). Turn tasks are tracked in a set, and cancellation at rotation deliberately *keeps* the journal entry — the rotation notice told the user "it's saved", so the next host must actually find it. A poll returning suspiciously fast (broken/proxied API) now sleeps instead of hot-looping the Bot API.
+
+## ADR-15: The bot knows itself, can reach Telegram, and keeps its promises (v0.8)
+
+The recurring production failure was no longer a crash — it was the agent
+not knowing what it was. It lived inside Telegram yet said "I can't reach
+Telegram"; it had a bot token yet denied being able to send anything; it
+promised "I'll do it later" with no machinery behind the words. The
+decisions:
+
+- **Self-knowledge is injected, never assumed.** Every chat prompt now
+  carries an ENVIRONMENT block with ground truth the frontend constructs:
+  "you are the Telegram bot @… (verified via getMe), you are INSIDE
+  Telegram, this is the current chat_id, these are the other chats you are
+  in" — plus a dynamic, complete tool list captured from the registry the
+  session actually built (it can never drift from reality), and an honest
+  CANNOT-list (no calls, no SMS/email, no joining chats, no account
+  access). The block ends with the rule that closes the loop: never claim
+  you lack a capability in the list, never claim you used a tool that
+  isn't, and say plainly what's missing instead of inventing it.
+- **The chat index is the awareness substrate and the send allowlist.**
+  `_note_chat` records every authorized chat (id, type, title, username,
+  first/last seen) into the persisted state file — only authorized ones;
+  strangers must not become sendable destinations. The index is bounded
+  (100, least-recently-seen evicted) and never downgrades (a sparse later
+  chat object can't erase a known title). `list_chats` reads it;
+  `send_telegram_message`/`send_document` refuse any destination not on
+  it, with the known list attached so the model self-corrects.
+- **Owner-in-group trust.** In claim mode the bot refused any chat that
+  wasn't the owner's private chat — meaning a group the owner *added the
+  bot to* was locked out, and the whole "send it to my group" capability
+  was dead on arrival. `_authorized_msg` now also accepts a chat when the
+  message's `from.id` equals the claiming owner: server-verified, and the
+  owner's account is the trust root of a claimed bot. Strangers in that
+  same group stay refused; approval buttons from indexed chats remain
+  valid.
+- **Addressable sends are WRITES_EXTERNAL; same-chat delivery stays
+  sandboxed.** `send_telegram_message`/`send_document` can reach any known
+  chat, and each call passes the inline Approve/Deny gate — the button
+  names the destination, so "which group? sending now" ends in one tap.
+  `send_file` (destination structurally fixed to the requester) keeps its
+  SANDBOXED permission. The send tools' descriptions teach the distinction
+  that makes this safe: in the *current* chat your ordinary reply is
+  already a Telegram message — the tools exist for *other* chats.
+- **"I will" is a database row.** `schedule_task` records the commitment
+  (title, prompt, run_at, owning chat) in the new `jobs` table of
+  woyo.sqlite3 — which already syncs across ephemeral runners, so a
+  promise survives rotation by construction. The tool returns the job id
+  and human-readable time, and the preamble switches to a KEEPING PROMISES
+  rule: "I will do it later" is only real as a schedule_task call made in
+  the same turn. Caps: 25 active jobs per chat, a 30-day horizon, no past
+  timestamps, list/cancel scoped to the owning chat.
+- **The scheduler is a loop beside the poller, not a cron daemon.**
+  `_job_loop` ticks every `job_poll_s` (30 s), picks due jobs, and runs
+  each as a normal turn of the owning chat's session — same lock (it
+  queues behind a live conversation, never interleaves), same budgets,
+  same approval gates. The chat receives a ⏰ header plus the agent's
+  reply; the job lands in `done` with a result preview, or `failed` with
+  an explicit ⚠️ message — the "tell me immediately when it fails"
+  requirement. Boot-time `recover()` re-queues `running` rows a killed
+  host left behind (bounded attempts, then an honest failure). A job
+  cancelled by rotation is re-queued for the next host; `/tasks` lists
+  pending commitments for the chat.
+- **Sub-agents still can't touch any of this.** The fixed `_CHILD_TOOLS`
+  include-list predates the new tools, so children structurally lack
+  Telegram reach and the scheduler — delegation stays compute-shaped.

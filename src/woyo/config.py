@@ -136,6 +136,12 @@ class Settings(BaseSettings):
     chat_asr_provider: str | None = None  # OpenAI-compat transcriptions endpoint, e.g. "groq"
     chat_asr_model: str = "whisper-large-v3"
 
+    # --- scheduled jobs / follow-through (v0.8) ---
+    job_poll_s: int = 30  # scheduler tick inside the chat frontends
+    max_scheduled_jobs: int = 25  # active jobs per chat (limit)
+    max_schedule_horizon_days: int = 30  # how far ahead a task may be scheduled
+    job_max_attempts: int = 3  # host-rotation retries before a job fails out
+
     # --- persistence, tasks & memory (Phase 3, v0.4) ---
     db_path: str = "~/.woyo/woyo.sqlite3"  # tasks + memories (WAL)
     task_checkpoint: bool = True  # persist run state each step for resume

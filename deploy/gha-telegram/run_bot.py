@@ -324,7 +324,10 @@ def main() -> None:
     bot = TelegramBot(settings, token, allowed)
 
     if CLONE_DIR is not None:
-        # offset/owner/pending-journal state: sync after every change
+        # scheduled jobs live in woyo.sqlite3 — sync on every transition
+        bot.jobs_changed_cb = _push_db
+
+        # offset/owner/pending-journal/chats state: sync after every change
         orig_save_state = bot._save_state
 
         def save_state() -> None:

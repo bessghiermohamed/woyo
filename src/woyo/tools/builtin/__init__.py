@@ -26,6 +26,18 @@ from woyo.tools.builtin.sandbox import (
     ShellExecTool,
     WriteFileTool,
 )
+from woyo.tools.builtin.schedule_tools import (
+    CancelScheduledTaskTool,
+    ListScheduledTasksTool,
+    ScheduleTaskTool,
+)
+from woyo.tools.builtin.telegram_tools import (
+    GetChatInfoTool,
+    ListChatsTool,
+    SendDocumentTool,
+    SendMessageTool,
+    TelegramTransport,
+)
 from woyo.tools.builtin.web_search import WebSearchTool
 from woyo.tools.http_cache import build_cache_from_settings
 
@@ -40,6 +52,9 @@ def build_default_registry(
     memory: MemoryStore | None = None,
     router=None,  # ModelRouter — enables spawn_agent (sub-agents)
     file_sender: FileSender | None = None,  # chat transport — enables send_file
+    telegram: TelegramTransport | None = None,  # enables the telegram tools
+    job_store=None,  # JobStore — enables the scheduler tools
+    chat_id: int | None = None,  # the chat the scheduler tools act for
 ) -> ToolRegistry:
     """Assemble the standard tool set (see ADR-6: search backends are adapters)."""
     registry = ToolRegistry(bus=bus, cap_chars=settings.tool_output_cap_chars)
@@ -71,6 +86,21 @@ def build_default_registry(
     if file_sender is not None:
         # chat frontends only: deliver workspace files to the requesting chat
         tools.append(SendFileTool(settings, file_sender))
+    if telegram is not None:
+        # chat frontends with a Bot API transport: addressable sends
+        tools += [
+            SendMessageTool(telegram),
+            ListChatsTool(telegram),
+            GetChatInfoTool(telegram),
+            SendDocumentTool(settings, telegram),
+        ]
+    if job_store is not None and chat_id is not None:
+        # chat frontends with a scheduler: promises become rows
+        tools += [
+            ScheduleTaskTool(settings, job_store, chat_id),
+            ListScheduledTasksTool(settings, job_store, chat_id),
+            CancelScheduledTaskTool(job_store, chat_id),
+        ]
     if memory is not None:
         from woyo.tools.builtin.memory_tools import build_memory_tools
 
@@ -98,4 +128,11 @@ __all__ = [
     "CreateDocumentTool",
     "SpawnAgentTool",
     "SendFileTool",
+    "SendMessageTool",
+    "ListChatsTool",
+    "GetChatInfoTool",
+    "SendDocumentTool",
+    "ScheduleTaskTool",
+    "ListScheduledTasksTool",
+    "CancelScheduledTaskTool",
 ]

@@ -30,6 +30,17 @@ httpx client woyo already ships. Safety properties:
   store + workspace, and ingested into the agent's prompt (see
   chat/files.py); the send_file tool delivers workspace files back to
   the requesting chat via sendDocument — no other destination exists.
+- AWARENESS + REACH (v0.8): the bot keeps an index of the chats it is in
+  (persisted in the state file) and injects it — with its @username and
+  the current chat id — into every agent prompt, so the agent knows
+  where it lives. A TelegramTransport exposes proactive, addressable
+  sends (send_telegram_message / send_document to any KNOWN chat;
+  unknown destinations are refused, cross-chat sends pass the approval
+  gate).
+- FOLLOW-THROUGH (v0.8): scheduled jobs (store/jobs.py) execute when due
+  and report back in the owning chat — "I will" became a commitment.
+  The job loop runs beside the poller; jobs interrupted by rotation are
+  re-queued on the next host (bounded attempts).
 """
 
 from __future__ import annotations
@@ -40,6 +51,7 @@ import json
 import logging
 import mimetypes
 import shutil
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -54,6 +66,7 @@ from woyo.chat.files import (
 from woyo.chat.session import ChatReply, ChatSession
 from woyo.config import Settings, env_value
 from woyo.errors import AgentError
+from woyo.store.jobs import JobStore
 
 log = logging.getLogger("woyo.telegram")
 
@@ -69,13 +82,19 @@ WELCOME = (
     "run — and *files*: documents, code, PDFs, archives, photos (I can view "
     "them), voice notes. I'll read what you send, work on it, and cite "
     "verified sources.\n\n"
-    "Ask me to *create* files too — reports, code, CSVs, exports — and I'll "
-    "send them right here in the chat. I can also run Python, keep a "
-    "workspace, spawn sub-agents, and (with your approval) run shell "
-    "commands.\n\n"
+    "Ask me to *create* files too — reports, code, CSVs, PDFs in Arabic or "
+    "any script — and I'll send them right here. I can also send messages "
+    "and files to *other chats I'm in* (I'll ask you to approve those), run "
+    "Python, keep a workspace, spawn sub-agents, and (with your approval) "
+    "run shell commands.\n\n"
+    "⏰ *I keep my promises:* ask me to do something *later* — a reminder, a "
+    "delayed report, a follow-up — and I'll schedule it so it actually runs "
+    "at that time and reports back here, with the result or the reason it "
+    "failed.\n\n"
     "Commands:\n"
     "/new — start a fresh conversation\n"
     "/status — usage so far\n"
+    "/tasks — pending scheduled tasks\n"
     "/help — this message"
 )
 
@@ -120,6 +139,54 @@ def split_message(text: str, limit: int = _CHUNK) -> list[str]:
     return [c for c in chunks if c]
 
 
+class _BotTransport:
+    """TelegramTransport implementation bound to one TelegramBot.
+
+    Deliveries raise on failure (the tools turn that into observations);
+    the allowlist is the set of chats the bot actually knows — the current
+    conversation, the persisted chat index, or the deployment allowlist.
+    """
+
+    def __init__(self, bot: TelegramBot, current_chat_id: int):
+        self._bot = bot
+        self.current_chat_id = current_chat_id
+
+    async def send_message(self, chat_id: int, text: str) -> None:
+        for chunk in split_message(text):
+            await self._bot._api("sendMessage", chat_id=chat_id, text=chunk)
+
+    async def send_document(
+        self, chat_id: int, path: Path, caption: str
+    ) -> None:
+        await self._bot._send_document(chat_id, path, caption)
+
+    def known_chats(self) -> list[dict]:
+        out: list[dict] = []
+        for chat_id, entry in self._bot._chats.items():
+            row = {"chat_id": chat_id, **entry}
+            out.append(row)
+        if self.current_chat_id not in self._bot._chats:
+            out.append({
+                "chat_id": self.current_chat_id,
+                "title": "this conversation",
+                "type": "current",
+                "last_seen": "now",
+            })
+        return sorted(out, key=lambda c: c.get("chat_id", 0))
+
+    async def chat_info(self, chat_id: int) -> dict:
+        return await self._bot._api("getChat", chat_id=chat_id)
+
+    def is_known(self, chat_id: int) -> bool:
+        b = self._bot
+        return (
+            chat_id == self.current_chat_id
+            or chat_id in b._chats
+            or chat_id in b.allowed
+            or chat_id == b._owner
+        )
+
+
 class TelegramBot:
     """Long-polling bot bridging Telegram chats to ChatSessions."""
 
@@ -150,6 +217,13 @@ class TelegramBot:
         # in-flight answer tasks (drained on graceful shutdown)
         self._inflight: set[asyncio.Task] = set()
         self._stopping = False
+        # v0.8 awareness: @username + the chats this bot is actually in
+        self._bot_username = "?"
+        self._chats: dict[int, dict] = {}
+        # v0.8 follow-through: scheduled jobs + a sync hook for the host
+        self.jobs = JobStore(settings.db_file())
+        self.jobs_changed_cb = None  # host wires this (e.g. run_bot _push_db)
+        self._job_task: asyncio.Task | None = None
         self._load_state()
 
     # ------------------------------------------------------------------
@@ -171,48 +245,61 @@ class TelegramBot:
 
         started = _time.monotonic()
         me = await self._api("getMe")
-        bot_name = me.get("username", "?")
+        self._bot_username = str(me.get("username") or "?")
+        bot_name = self._bot_username
         log.info("logged in as @%s — polling for messages…", bot_name)
         print(f"woyo telegram bot @{bot_name} is up — Ctrl-C to stop")
         if self._had_state:
             await self._drain_journal()
         else:
             await self._skip_backlog()
-        while True:
-            if shutdown_event is not None and shutdown_event.is_set():
-                log.info("shutdown signal — rotating out")
-                break
-            if max_runtime_s is not None:
-                remaining = max_runtime_s - (_time.monotonic() - started)
-                # never start a long poll that would outlive the budget
-                if remaining < _POLL_TIMEOUT + 10:
-                    log.info(
-                        "runtime budget reached (%.0fs) — rotating out",
-                        max_runtime_s,
-                    )
+        # v0.8 follow-through: jobs left 'running' by a killed host go back
+        # on the queue; then the scheduler ticks beside the poller
+        recovered = self.jobs.recover(max_attempts=self.settings.job_max_attempts)
+        if recovered:
+            log.info("recovered %s interrupted job(s)", len(recovered))
+            self._jobs_changed()
+        self._job_task = asyncio.create_task(self._job_loop())
+        try:
+            while True:
+                if shutdown_event is not None and shutdown_event.is_set():
+                    log.info("shutdown signal — rotating out")
                     break
-            try:
-                poll_started = _time.monotonic()
-                updates = await self._poll()
-                for update in updates:
-                    await self._dispatch(update)
-                if not updates and _time.monotonic() - poll_started < 5.0:
-                    # an empty long-poll should hold ~50s server-side; one
-                    # returning instantly means a broken/proxied API (or a
-                    # test double) — never hot-loop the Bot API
-                    await asyncio.sleep(1.0)
-            except asyncio.CancelledError:
-                raise
-            except RuntimeError as exc:
-                if "409" in str(exc):
-                    # another instance holds this token — stop loudly, not in a loop
-                    print(f"stopping: {exc}")
+                if max_runtime_s is not None:
+                    remaining = max_runtime_s - (_time.monotonic() - started)
+                    # never start a long poll that would outlive the budget
+                    if remaining < _POLL_TIMEOUT + 10:
+                        log.info(
+                            "runtime budget reached (%.0fs) — rotating out",
+                            max_runtime_s,
+                        )
+                        break
+                try:
+                    poll_started = _time.monotonic()
+                    updates = await self._poll()
+                    for update in updates:
+                        await self._dispatch(update)
+                    if not updates and _time.monotonic() - poll_started < 5.0:
+                        # an empty long-poll should hold ~50s server-side; one
+                        # returning instantly means a broken/proxied API (or a
+                        # test double) — never hot-loop the Bot API
+                        await asyncio.sleep(1.0)
+                except asyncio.CancelledError:
                     raise
-                log.error("poll cycle failed: %s", exc)
-                await asyncio.sleep(3)
-            except Exception as exc:  # noqa: BLE001 — the poller must survive
-                log.error("poll cycle failed: %s", exc)
-                await asyncio.sleep(3)
+                except RuntimeError as exc:
+                    if "409" in str(exc):
+                        # another instance holds this token — stop loudly, not in a loop
+                        print(f"stopping: {exc}")
+                        raise
+                    log.error("poll cycle failed: %s", exc)
+                    await asyncio.sleep(3)
+                except Exception as exc:  # noqa: BLE001 — the poller must survive
+                    log.error("poll cycle failed: %s", exc)
+                    await asyncio.sleep(3)
+        finally:
+            if self._job_task is not None:
+                self._job_task.cancel()
+                self._job_task = None
         await self._graceful_exit(drain_grace_s)
 
     async def _graceful_exit(self, grace_s: float) -> None:
@@ -316,11 +403,12 @@ class TelegramBot:
         chat_id = int((msg.get("chat") or {}).get("id", 0))
         if not chat_id:
             return
+        self._note_chat(msg)  # awareness: remember every (authorized) chat
         text = (msg.get("text") or msg.get("caption") or "").strip()
         attachment = attachment_ref(msg)
         update_id = update.get("update_id")
         if msg.get("sticker") and not text and not attachment:
-            if not self._authorized(chat_id):
+            if not self._authorized_msg(chat_id, msg):
                 self._journal_done(update_id)
                 return
             await self._send(
@@ -335,7 +423,7 @@ class TelegramBot:
             )
             self._journal_done(update_id)
             return
-        if not self._authorized(chat_id):
+        if not self._authorized_msg(chat_id, msg):
             await self._send(chat_id, "🔒 This bot is private.")
             self._journal_done(update_id)
             return
@@ -373,6 +461,191 @@ class TelegramBot:
             return chat_id in self.allowed
         return self._owner in (None, chat_id)
 
+    def _authorized_msg(self, chat_id: int, msg: dict) -> bool:
+        """Access check with message context.
+
+        Beyond the chat-level rule, the CLAIMING OWNER speaking in a group
+        they added the bot to authorizes that chat: `from.id` comes from
+        Telegram's servers, and the owner's account is the trust root of a
+        claimed bot. Strangers in any chat stay refused.
+        """
+        if self._authorized(chat_id):
+            return True
+        if self._owner is None:
+            return False
+        from_id = (msg.get("from") or {}).get("id")
+        return from_id == self._owner
+
+    # ------------------------------------------------------------------
+    # v0.8 — awareness: the chat index the agent is told about
+    # ------------------------------------------------------------------
+    def _note_chat(self, msg: dict) -> None:
+        """Remember an (authorized) chat so the agent knows where it lives.
+
+        Only chats that pass the access check are indexed — strangers must
+        not become sendable destinations.
+        """
+        chat = msg.get("chat") or {}
+        chat_id = chat.get("id")
+        if not isinstance(chat_id, int) or not self._authorized_msg(chat_id, msg):
+            return
+        now = datetime.now(UTC).isoformat(timespec="seconds")
+        entry = self._chats.get(chat_id, {})
+        # never downgrade: a later sparse chat object (no title/username)
+        # must not erase what an earlier richer one recorded
+        title = (
+            chat.get("title")
+            or " ".join(
+                p for p in (chat.get("first_name"), chat.get("last_name")) if p
+            )
+            or chat.get("username")
+            or entry.get("title")
+            or str(chat_id)
+        )
+        self._chats[chat_id] = {
+            "title": str(title)[:120],
+            "type": str(chat.get("type", entry.get("type", "?"))),
+            "username": chat.get("username") or entry.get("username"),
+            "first_seen": entry.get("first_seen", now),
+            "last_seen": now,
+        }
+        # bounded index: forget the least recently seen beyond 100 entries
+        if len(self._chats) > 100:
+            by_age = sorted(
+                self._chats.items(), key=lambda kv: kv[1].get("last_seen", "")
+            )
+            for stale_id, _ in by_age[: len(self._chats) - 100]:
+                self._chats.pop(stale_id, None)
+        self._save_state()
+
+    def _environment_provider(self, chat_id: int):
+        """Build the environment facts injected into this chat's prompts."""
+
+        def env() -> str:
+            others = {
+                cid: c for cid, c in self._chats.items() if cid != chat_id
+            }
+            lines = [
+                f"You are woyo, running as the Telegram bot @{self._bot_username} "
+                "(verified via the Bot API).",
+                "You are INSIDE Telegram right now: user messages arrive as "
+                "Telegram updates and your replies are delivered to the user "
+                "as Telegram messages. Saying 'I can't reach Telegram' is "
+                "simply wrong — you live here.",
+                "A server-side bot token is configured for Bot API calls "
+                "(never reveal, paste or send it).",
+                f"Current conversation: chat_id {chat_id} — your replies and "
+                "send_file deliveries land here.",
+            ]
+            if others:
+                listing = "; ".join(
+                    f"{c.get('title', '?')} (id {cid}, {c.get('type', '?')})"
+                    for cid, c in sorted(others.items())
+                )
+                lines.append(
+                    "Other chats you are in (addressable with "
+                    "send_telegram_message / send_document, which ask the "
+                    f"user's approval first): {listing}."
+                )
+            else:
+                lines.append(
+                    "You are not in any other chat besides this one right now."
+                )
+            lines.append(
+                "You CANNOT: make voice or video calls, send SMS or email, "
+                "join chats by yourself, read messages from chats you are not "
+                "in, access the user's Telegram account or contacts, or "
+                "receive verification codes. If a task needs something your "
+                "tool list does not offer, say plainly what is missing — "
+                "never invent a capability."
+            )
+            return "\n".join(lines)
+
+        return env
+
+    # ------------------------------------------------------------------
+    # v0.8 — follow-through: the scheduled-job loop
+    # ------------------------------------------------------------------
+    def _jobs_changed(self) -> None:
+        if self.jobs_changed_cb is not None:
+            try:
+                self.jobs_changed_cb()
+            except Exception as exc:  # noqa: BLE001 — sync must not kill jobs
+                log.warning("jobs sync hook failed: %s", exc)
+
+    async def _job_loop(self) -> None:
+        """Tick job_poll_s: run what is due, report to the owning chat."""
+        while not self._stopping:
+            try:
+                await self._run_due_jobs()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — the scheduler must survive
+                log.error("job sweep failed: %s", exc)
+            await asyncio.sleep(self.settings.job_poll_s)
+
+    async def _run_due_jobs(self) -> None:
+        for job in self.jobs.due(limit=5):
+            log.info("job #%s '%s' due — running", job.id, job.title)
+            task = asyncio.create_task(self._run_job(job.id))
+            self._inflight.add(task)
+            task.add_done_callback(self._task_done)
+
+    async def _run_job(self, job_id: int) -> None:
+        """Execute one scheduled job and report the outcome in its chat."""
+        job = self.jobs.get(job_id)
+        if job is None or job.status != "scheduled":
+            return
+        self.jobs.mark_running(job_id)
+        self._jobs_changed()
+        chat_id = job.chat_id
+        lock = self._locks.setdefault(chat_id, asyncio.Lock())
+        typing = asyncio.create_task(self._typing_loop(chat_id))
+        try:
+            async with lock:
+                await self._send(
+                    chat_id, f"⏰ Running your scheduled task: {job.title}"
+                )
+                prompt = (
+                    "(This is a SCHEDULED task you committed to earlier in "
+                    "this chat; its time has come — execute it now and report "
+                    f"the result. Title: {job.title!r}. Your final reply is "
+                    "delivered to this chat automatically — do NOT call "
+                    "send_telegram_message for this chat; that tool is only "
+                    "for reaching OTHER chats and nobody may be awake to "
+                    "press its approval button.)\n\n" + job.prompt
+                )
+                reply = await self._session(chat_id).send(prompt)
+                await self._send_reply(chat_id, reply)
+                self.jobs.finish(
+                    job_id, "done", result_preview=reply.answer
+                )
+                self._jobs_changed()
+        except asyncio.CancelledError:
+            # host rotation: put it back so the next host retries (bounded)
+            cur = self.jobs.get(job_id)
+            if cur is not None and cur.status == "running":
+                if cur.attempts >= self.settings.job_max_attempts:
+                    self.jobs.finish(
+                        job_id, "failed",
+                        error="interrupted by host rotation too many times",
+                    )
+                else:
+                    self.jobs.reschedule(job_id)
+                self._jobs_changed()
+            raise
+        except Exception as exc:  # noqa: BLE001 — failures must be reported
+            log.exception("scheduled job #%s failed", job_id)
+            self.jobs.finish(job_id, "failed", error=str(exc))
+            self._jobs_changed()
+            await self._send(
+                chat_id,
+                f"⚠️ Scheduled task '{job.title}' failed: {exc}\n"
+                "Nothing is running now — tell me to retry it if you want.",
+            )
+        finally:
+            typing.cancel()
+
     async def _command(self, chat_id: int, text: str) -> None:
         cmd = text.split()[0].split("@")[0].lower()
         if cmd == "/start":
@@ -391,6 +664,20 @@ class TelegramBot:
             await self._send(chat_id, "🧹 Fresh conversation — I've forgotten the previous one.")
         elif cmd == "/status":
             await self._send(chat_id, self._session(chat_id).status_line())
+        elif cmd == "/tasks":
+            jobs = self.jobs.active_for_chat(chat_id)
+            if not jobs:
+                await self._send(
+                    chat_id, "📭 No scheduled tasks pending in this chat."
+                )
+            else:
+                lines = ["⏰ Pending scheduled tasks:"]
+                for j in jobs:
+                    lines.append(f"#{j.id} — {j.title} (runs at {j.run_at} UTC)")
+                lines.append(
+                    "\nAsk me to cancel any of them by id (cancel_scheduled_task)."
+                )
+                await self._send(chat_id, "\n".join(lines))
         elif cmd == "/help":
             await self._send(chat_id, WELCOME, markdown=True)
         else:
@@ -553,8 +840,10 @@ class TelegramBot:
         if entry is None:
             return
         fut, asked_chat = entry
-        # only the chat that was asked (and is still authorized) may answer
-        if chat_id != asked_chat or not self._authorized(chat_id):
+        # only the chat that was asked (and is still known to us) may answer
+        if chat_id != asked_chat or not (
+            self._authorized(chat_id) or chat_id in self._chats
+        ):
             log.warning("approval press from wrong chat %s ignored", chat_id)
             return
         self._pending.pop(ap_id, None)
@@ -581,6 +870,10 @@ class TelegramBot:
                 f"telegram:{chat_id}",
                 self.settings,
                 file_sender=self._make_file_sender(chat_id),
+                environment=self._environment_provider(chat_id),
+                telegram_transport=_BotTransport(self, chat_id),
+                job_store=self.jobs,
+                chat_id=chat_id,
             )
         return self._sessions[chat_id]
 
@@ -659,6 +952,13 @@ class TelegramBot:
                 self._journal = {
                     int(k): v for k, v in pending.items() if isinstance(v, dict)
                 }
+            chats = data.get("chats")
+            if isinstance(chats, dict):
+                self._chats = {
+                    int(cid): entry
+                    for cid, entry in chats.items()
+                    if isinstance(entry, dict)
+                }
         except (OSError, ValueError, TypeError):
             pass
 
@@ -670,6 +970,7 @@ class TelegramBot:
                     "offset": self._offset,
                     "owner": self._owner,
                     "pending": {str(k): v for k, v in self._journal.items()},
+                    "chats": {str(k): v for k, v in self._chats.items()},
                 }),
                 encoding="utf-8",
             )
